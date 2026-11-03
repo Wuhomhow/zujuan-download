@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Exam Download 设置</title>
+  <style>
+    body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0 auto;padding:24px;max-width:760px;color:#1f2937}
+    h1{font-size:22px;margin:0 0 16px}
+    .panel{border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px}
+    .row{display:flex;justify-content:space-between;gap:12px;margin:8px 0}
+    input{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px}
+    button{border:1px solid #d1d5db;background:#fff;border-radius:6px;padding:10px 14px;cursor:pointer}
+    .primary{background:#111827;color:#fff;border-color:#111827}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .error{color:#b91c1c;margin-top:8px}
+    .muted{color:#6b7280}
+    code{background:#f3f4f6;padding:2px 6px;border-radius:4px}
+  </style>
+</head>
+<body>
+  <h1>Exam Download</h1>
+  <div class="panel">
+    <h2 style="margin:0 0 12px;font-size:18px;">排版设置</h2>
+    <div class="row">
+      <label for="answerPosition">答案或解析位置</label>
+      <select id="answerPosition">
+        <option value="paperEnd">卷尾</option>
+        <option value="questionEnd">题后</option>
+      </select>
+    </div>
+    <div class="row" style="align-items:center;justify-content:flex-start;gap:10px;">
+      <input id="showParse" type="checkbox" style="width:auto;">
+      <label for="showParse">显示解析</label>
+    </div>
+    <div class="row" style="align-items:center;justify-content:flex-start;gap:10px;">
+      <input id="showKnowledge" type="checkbox" style="width:auto;">
+      <label for="showKnowledge">显示考点</label>
+    </div>
+    <div class="row" style="align-items:center;justify-content:flex-start;gap:10px;">
+      <input id="showDifficulty" type="checkbox" style="width:auto;">
+      <label for="showDifficulty">显示难度</label>
+    </div>
+    <div class="row" style="align-items:center;justify-content:flex-start;gap:10px;">
+      <span>显示题目来源</span>
+      <div style="display:flex;gap:12px;">
+        <label><input id="showOriginNone" type="radio" name="optShowOrigin" value="none" style="width:auto;">不显示</label>
+        <label><input id="showOriginStem" type="radio" name="optShowOrigin" value="stem" style="width:auto;">题文前</label>
+        <label><input id="showOriginAnswer" type="radio" name="optShowOrigin" value="answer" style="width:auto;">答案处</label>
+      </div>
+    </div>
+    <div class="row" style="align-items:center;justify-content:flex-start;gap:10px;">
+      <span>来源颜色（题文前）</span>
+      <div style="display:flex;gap:12px;">
+        <label><input id="originColorBlack" type="radio" name="optOriginColor" value="black" style="width:auto;">黑色</label>
+        <label><input id="originColorRed" type="radio" name="optOriginColor" value="red" style="width:auto;">红色</label>
+      </div>
+    </div>
+    <div class="row" style="align-items:center;justify-content:flex-start;gap:10px;">
+      <input id="addAnswerArea" type="checkbox" style="width:auto;">
+      <label for="addAnswerArea">增加作答区</label>
+    </div>
+    <div class="row">
+      <label for="format">下载格式</label>
+      <select id="format">
+        <option value="docx">DOCX</option>
+        <option value="pdf">PDF</option>
+      </select>
+    </div>
+    <div id="message" class="error"></div>
+  </div>
+  <div class="panel">
+    <div class="row"><span>Installation ID</span><span id="installationId">-</span></div>
+    <div class="row"><span>后台步骤</span><span id="debugStep">-</span></div>
+    <div class="row"><span>后台错误</span><span id="debugError">-</span></div>
+  </div>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

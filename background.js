@@ -1,0 +1,1309 @@
+import "./model.js";
+import { cacheZujuanDoc, getCachedZujuanDoc } from "./zujuan-cache.js";
+import { activateLicense, deactivateLicense, validateLicense } from "./license-client.js";
+
+import {
+    MSG,
+    cloneDefaultState,
+    formatExportTitle,
+    humanError,
+    resolveStageFromLearnGradeName,
+    resolveStageSubjectPair,
+    resolveSubjectFromTitleText,
+    resolveZujuanSubjectFromSubjectId
+} from "./shared.js";
+let state = cloneDefaultState(),
+    previewJobs = {},
+    initPromise = null;
+const PREVIEW_JOB_MAX_AGE_MS = 24 * 60 * 60 * 1000,
+    PREVIEW_JOB_MAX_COUNT = 20;
+async function loadState() {
+    const e = await chrome.storage.local.get(["mvpState", "previewJobs"]);
+    e.mvpState && (state = {
+        ...cloneDefaultState(),
+        ...e.mvpState,
+        settings: {
+            ...cloneDefaultState().settings,
+            ...e.mvpState.settings || {}
+        },
+        debug: {
+            ...cloneDefaultState().debug,
+            ...e.mvpState.debug || {}
+        },
+        license: {
+            ...cloneDefaultState().license,
+            ...e.mvpState.license || {}
+        },
+        export: {
+            ...cloneDefaultState().export,
+            ...e.mvpState.export || {}
+        }
+    }), e.previewJobs && (previewJobs = e.previewJobs), cleanupPreviewJobs(), state.license.installationId || (state.license.installationId = crypto.randomUUID()), await persist()
+}
+/* SW 保活：导出全流程含多个长操作（组卷移动站开隐藏标签页抓数、菁优详情补抓等待）。
+ * Chrome 对 MV3 SW 约 30s 无活动即回收，回收会掐断在飞 Promise，导致导出流程假死。
+ * 每 20s 一次 chrome API 调用即可重置空闲计时器，成本可忽略。 */
+let keepAliveTimer = null;
+function startKeepAlive() {
+    stopKeepAlive();
+    keepAliveTimer = setInterval(() => {
+        try {
+            chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError)
+        } catch {}
+    }, 2e4)
+}
+function stopKeepAlive() {
+    if (keepAliveTimer) {
+        clearInterval(keepAliveTimer), keepAliveTimer = null
+    }
+}
+async function persist() {
+    await chrome.storage.local.set({
+        mvpState: state,
+        previewJobs: previewJobs
+    })
+}
+function cleanupPreviewJobs() {
+    const now = Date.now(),
+        entries = Object.entries(previewJobs).filter(([e, t]) => t && t.createdAt && now - new Date(t.createdAt).getTime() < PREVIEW_JOB_MAX_AGE_MS);
+    entries.sort((e, t) => new Date(t[1].createdAt).getTime() - new Date(e[1].createdAt).getTime());
+    previewJobs = Object.fromEntries(entries.slice(0, PREVIEW_JOB_MAX_COUNT))
+}
+
+async function setDebug(e, t = null) {
+    state.debug = {
+        lastStep: e,
+        lastError: t,
+        updatedAt: (new Date).toISOString()
+    }, await persist()
+}
+
+function setExportPatch(e) {
+    state.export = {
+        ...state.export,
+        ...e
+    }
+}
+
+function ensureInitialized() {
+    return initPromise || (initPromise = loadState().catch(e => {
+        throw initPromise = null, e
+    })), initPromise
+}
+async function saveLicense(nextLicense) {
+    state.license = {
+        ...cloneDefaultState().license,
+        ...nextLicense,
+        installationId: state.license.installationId
+    };
+    await persist();
+    return state.license
+}
+async function requireActiveLicense() {
+    // 本地自用版本不再要求卡密；保留函数以兼容原有导出流程。
+    return state.license
+}
+async function syncStateFromStorage() {
+    const e = await chrome.storage.local.get(["mvpState", "previewJobs"]);
+    e.mvpState && (state = {
+        ...cloneDefaultState(),
+        ...e.mvpState,
+        settings: {
+            ...cloneDefaultState().settings,
+            ...e.mvpState.settings || {}
+        },
+        debug: {
+            ...cloneDefaultState().debug,
+            ...e.mvpState.debug || {}
+        },
+        license: {
+            ...cloneDefaultState().license,
+            ...e.mvpState.license || {}
+        },
+        export: {
+            ...cloneDefaultState().export,
+            ...e.mvpState.export || {}
+        }
+    }), e.previewJobs && (previewJobs = e.previewJobs), cleanupPreviewJobs()
+}
+
+function buildZujuanMobileQuestionUrl(e) {
+    try {
+        const t = new URL(e).pathname.match(/\/(\d+)q(\d+)\.html/i);
+        if (!t) return null;
+        const a = t[1],
+            s = t[2];
+        return `https://mzujuan.xkw.com/${a}q${s}.html?target=ques_detail&quesId=${s}&subjectId=${a}`
+    } catch {
+        return null
+    }
+}
+
+function buildZujuanMobilePaperUrl(e) {
+    try {
+        const t = new URL(e);
+        /* 精品专辑页：移动站同路径页的 __NUXT__ 内嵌当前试卷数据（paper.queses），直接复用同 path。
+         * 必须先于 q/p 数字模式：专辑 id 为字母数字混合串，可能被误命中 */
+        if (/\/thematiclist\/[\w-]+\.html/i.test(t.pathname)) return `https://mzujuan.xkw.com${t.pathname}`;
+        /* 分享试卷：PC 分享页 /share-paper/{sfId}.html?secret=… 与移动端 recorddetail?sfId=…
+         * 统一落到移动站 recorddetail（短链 xkw.com/xxx 会 301 到分享页，无需单独处理） */
+        const a = t.pathname.match(/\/share-paper\/(\d+)\.html/i);
+        if (a) return `https://mzujuan.xkw.com/recorddetail?type=5&sfId=${a[1]}&secret=${encodeURIComponent(t.searchParams.get("secret")||"")}`;
+        if (/\/recorddetail/i.test(t.pathname)) {
+            const e2 = t.searchParams.get("sfId");
+            if (e2) return `https://mzujuan.xkw.com/recorddetail?type=${t.searchParams.get("type")||"5"}&sfId=${e2}&secret=${encodeURIComponent(t.searchParams.get("secret")||"")}`
+        }
+        const s = t.pathname.match(/\/(\d+)p(\d+)\.html/i);
+        if (!s) return null;
+        const r = s[1],
+            i = s[2];
+        return `https://mzujuan.xkw.com/${r}p${i}.html?target=paper_detail&paperId=${i}&subjectId=${r}`
+    } catch {
+        return null
+    }
+}
+
+function absolutizeMobileHtml(e) {
+    return String(e || "").replace(/src="Upload\//g, 'src="https://staticzujuan.xkw.com/quesimg/Upload/').replace(/src="\/Upload\//g, 'src="https://staticzujuan.xkw.com/quesimg/Upload/').replace(/(https:\/\/staticzujuan\.xkw\.com\/quesimg\/Upload\/formula\/[a-f0-9]+)\.png/gi, "$1.svg").replace(/([?&])resizew=\d+/gi, "$1resizew=800").replace(/\r/g, "").replace(/([^<>\n]*\S)\n+(?=[^<>]*[^<>\s\n])/g, "$1<br/>").replace(/##/g, "/")
+}
+
+/* 来源原始文本 → 标准格式（如 "24-25高一下·天津河西·期末"）；识别失败返回空串 */
+function parseSourceText(e) {
+    try {
+        const t = globalThis.ExamModel.parseExamSource(e);
+        return t ? t.text : ""
+    } catch {
+        return ""
+    }
+}
+
+function buildZujuanTitle(e) {
+    const t = resolveStageSubjectPair(e.subjectMenuTitle || ""),
+        a = "未知学段" !== t.stage ? t.stage : resolveStageFromLearnGradeName(e.learnGradeName || e.from || e.paperTitle || e.pageTitle || e.title || ""),
+        s = "未知学科" !== t.subject ? t.subject : "未知学科" !== resolveSubjectFromTitleText(e.paperTitle || e.pageTitle || e.title || "") ? resolveSubjectFromTitleText(e.paperTitle || e.pageTitle || e.title || "") : resolveZujuanSubjectFromSubjectId(e.subjectId);
+    return formatExportTitle(a, s)
+}
+
+function buildZujuanQuestionDoc(e, t, a) {
+    // 移动端原始数据 → 通用数据模型 → 渲染 sections
+    const s = globalThis.ExamModel.fromZujuanMobile({
+        id: e.id || "",
+        quesTypeName: e.quesTypeName || "",
+        quesDiffName: e.quesDiffName || "",
+        categoriesInfo: e.categoriesInfo || "",
+        from: e.from || "",
+        updateTime: e.updateTime || "",
+        quesBody: absolutizeMobileHtml(e.quesBody || ""),
+        quesAnswer: absolutizeMobileHtml(e.quesAnswer || ""),
+        quesParse: absolutizeMobileHtml(e.quesParse || "")
+    });
+    return {
+        title: buildZujuanTitle(e),
+        pageTitle: e.pageTitle || e.paperTitle || e.title || "",
+        paperTitle: e.paperTitle || e.pageTitle || e.title || "",
+        sourceUrl: t,
+        sourceSite: "zujuan",
+        sourcePageType: "question",
+        sourceLabel: a,
+        quesTypeName: s.type,
+        from: s.source,
+        examSource: parseSourceText(s.source),
+        tid: s.id,
+        updateTime: s.updateTime,
+        stem: "",
+        options: [],
+        answer: "",
+        analysis: "",
+        solution: "",
+        points: s.knowledge,
+        htmlSections: globalThis.ExamModel.questionToSections(s)
+    }
+}
+
+function buildZujuanPaperQuestion(e) {
+    // 移动端原始数据 → 通用数据模型 → 渲染 sections
+    const t = globalThis.ExamModel.fromZujuanMobile({
+        id: e.id || "",
+        quesTypeName: e.quesTypeName || "",
+        quesDiffName: e.quesDiffName || "",
+        categoriesInfo: e.categoriesInfo || "",
+        from: e.from || "",
+        updateTime: e.updateTime || "",
+        quesBody: absolutizeMobileHtml(e.quesBody || ""),
+        quesAnswer: absolutizeMobileHtml(e.quesAnswer || ""),
+        quesParse: absolutizeMobileHtml(e.quesParse || "")
+    });
+    return {
+        groupTitle: t.type || "未分类",
+        quesTypeName: t.type,
+        from: t.source,
+        examSource: parseSourceText(t.source),
+        tid: t.id,
+        updateTime: t.updateTime,
+        htmlSections: globalThis.ExamModel.questionToSections(t)
+    }
+}
+
+function normalizeZujuanPaperRawQuestion(e = {}) {
+    return {
+        quesBody: e.quesBody || "",
+        quesAnswer: e.quesAnswer || "",
+        quesParse: e.quesParse || "",
+        quesAudio: e.quesAudio || "",
+        quesChildNum: Number(e.quesChildNum) || 0,
+        qbmId: e.qbmId || "",
+        categoriesInfo: e.categoriesInfo || "",
+        quesTypeName: e.quesType?.name || e.quesTypeName || "",
+        quesDiffName: e.quesDiff?.name || e.quesDiffName || "",
+        from: e.from || "",
+        id: e.id || "",
+        updateTime: e.updateTime || ""
+    }
+}
+
+function isZujuanAudioUrl(e) {
+    try {
+        const t = new URL(String(e || ""));
+        return "https:" === t.protocol && /(^|\.)xkw\.com$/i.test(t.hostname)
+    } catch {
+        return !1
+    }
+}
+
+function listeningStemText(e) {
+    return String(e || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr|table)>/gi, "\n").replace(/<\/td>/gi, "  ").replace(/<[^>]+>/g, "").replace(/&nbsp;|&#160;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/\n{3,}/g, "\n\n").trim().slice(0, 6e3)
+}
+
+function buildZujuanSingleListening(e = []) {
+    const t = [],
+        a = new Map;
+    let s = 1;
+    for (const r of e) {
+        const i = Math.max(1, Math.min(20, Number(r.quesChildNum) || 1)),
+            o = Array.from({ length: i }, (e, t) => s + t);
+        s += i;
+        if (!isZujuanAudioUrl(r.quesAudio)) continue;
+        const n = String(r.quesAudio),
+            c = {
+                tid: String(r.id || ""),
+                questionNumbers: o,
+                stemText: listeningStemText(r.quesBody || "")
+            },
+            l = a.get(n);
+        l ? (l.questionNumbers.push(...o), l.questions.push(c)) : (a.set(n, {
+            audioUrl: n,
+            questionNumbers: [...o],
+            questions: [c]
+        }), t.push(a.get(n)))
+    }
+    return t
+}
+
+function withZujuanSingleListening(e, t) {
+    const a = buildZujuanSingleListening(t);
+    return a.length && (e.listeningAudio = {
+        ...e.listeningAudio || {},
+        singleQuestions: a
+    }), e
+}
+
+function groupZujuanQuestions(e) {
+    const t = [];
+    for (const a of e) {
+        const e = buildZujuanPaperQuestion(a),
+            s = e.groupTitle || "未分类",
+            r = t[t.length - 1];
+        r && r.title === s ? r.questions.push(e) : t.push({
+            title: s,
+            questions: [e]
+        })
+    }
+    return t
+}
+/* 注意：组卷网 PC 站登录态保存在 localStorage（非 cookie），且移动站试卷/试题页匿名即可返回完整数据。
+ * 因此不再用 cookie 启发式预判登录（会误报"请先登录"），是否登录墙由标签页内探针实测判定。 */
+/* 通过非激活标签页加载移动站页面并提取 __NUXT__ 数据。
+ * 移动站有 WAF JS 挑战，普通 fetch 无法通过；真实浏览器标签页会自动执行挑战脚本并携带用户登录态，
+ * 对用户完全无感（标签页不激活，拿到数据后立即关闭）。
+ * __NUXT__ 是 devalue/IIFE 形式（window.__NUXT__=(function(a,b,...){return{...}}(...))），
+ * 脚本原文无法 JSON.parse；因此在页面 MAIN world 直接轮询运行时的活对象（与旧版可用扩展一致），
+ * 数据就绪后一次性序列化取回。轮询立即开始，抢在移动站可能的跳转之前拿到数据。 */
+async function loadMobileNuxtViaTab(e, t = 3e4) {
+    const a = await chrome.tabs.create({
+        url: e,
+        active: !1
+    });
+    try {
+        const s = Date.now() + t;
+        for (;;) {
+            // 轻量探测：数据就绪时直接返回序列化结果；否则返回页面状态（跳转/登录墙/加载中）。
+            // 标签页导航中途 executeScript 会抛错，捕获后继续轮询。
+            const r = await chrome.scripting.executeScript({
+                target: { tabId: a.id },
+                world: "MAIN",
+                func: () => {
+                    try {
+                        const e = window.__NUXT__?.data?.[0];
+                        if (e && (e.paper || e.quesDetail)) return JSON.stringify(window.__NUXT__);
+                        return /^https?:\/\/zujuan\.xkw\.com\//i.test(location.href) ? "redirected" : /登录/.test(document.title || "") || document.querySelector('input[type="password"]') ? "login" : null
+                    } catch {
+                        return null
+                    }
+                }
+            }).catch(() => null),
+                o = r?.[0]?.result;
+            if ("login" === o) throw new Error("请先登录组卷网后再使用导出功能");
+            if ("redirected" === o) throw new Error("EXPORT_EXTRACT_FAILED");
+            if ("string" == typeof o && o.length > 2) {
+                const e = JSON.parse(o);
+                if (e?.data?.[0]) return e
+            }
+            if (Date.now() > s) throw new Error("EXPORT_EXTRACT_FAILED");
+            await new Promise(e => setTimeout(e, 300))
+        }
+    } finally {
+        try {
+            await chrome.tabs.remove(a.id)
+        } catch {}
+    }
+}
+async function fetchMobilePage(e) {
+    return loadMobileNuxtViaTab(e)
+}
+/* 分享试卷：移动站 recorddetail 页的试题数据不在 __NUXT__ 中，而是页面异步调用
+ * get_share_paper（paperXml：题目 id/标题/分组）→ ques/ids（题目正文，含答案解析）两个接口。
+ * 在标签页 MAIN world 内复用页面会话直接调这两个接口（与页面自身取数路径一致），
+ * 题目顺序以 paperXml 为准；返回 { title, bankId, quesList }（quesList 与普通试卷页同构）。 */
+async function loadSharePaperViaTab(e, t = 3e4) {
+    const a = await chrome.tabs.create({
+        url: e,
+        active: !1
+    });
+    try {
+        const s = Date.now() + t;
+        for (;;) {
+            const r = await chrome.scripting.executeScript({
+                target: {
+                    tabId: a.id
+                },
+                world: "MAIN",
+                func: async () => {
+                    try {
+                        if (/登录/.test(document.title || "") || document.querySelector('input[type="password"]')) return "login";
+                        const e2 = new URL(location.href).searchParams.get("sfId");
+                        if (!e2 || !document.body) return null;
+                        const t2 = await fetch(`/server_api/share/get_share_paper?sfId=${encodeURIComponent(e2)}`, {
+                                credentials: "include"
+                            }),
+                            n = (await t2.json())?.data;
+                        if (!n?.paperXml) return null;
+                        const o = String(n.paperXml),
+                            r2 = [...o.matchAll(/<ques\s[^>]*?\bid="(\d+)"/g)].map(e3 => e3[1]),
+                            a2 = (o.match(/<mainTitle[^>]*?text="([^"]*)"/) || [])[1] || "";
+                        if (!r2.length) return "noques";
+                        const i = await fetch(`/server_api/ques/ids/${n.bankId||11}?ids=${r2.join(",")}`, {
+                                method: "POST",
+                                credentials: "include"
+                            }),
+                            s2 = await i.json(),
+                            c = Array.isArray(s2?.data) ? s2.data : [];
+                        if (!c.length) return null;
+                        const u = new Map(c.map(e3 => [String(e3.id), e3])),
+                            l = r2.map(e3 => u.get(e3)).filter(Boolean);
+                        return l.length ? JSON.stringify({
+                            title: a2,
+                            bankId: n.bankId || 11,
+                            quesList: l
+                        }) : null
+                    } catch {
+                        return null
+                    }
+                }
+            }).catch(() => null),
+                o = r?.[0]?.result;
+            if ("login" === o) throw new Error("请先登录组卷网后再使用导出功能");
+            if ("noques" === o) throw new Error("EXPORT_EXTRACT_FAILED");
+            if ("string" == typeof o && o.length > 2) {
+                const e2 = JSON.parse(o);
+                if (e2?.quesList?.length) return e2
+            }
+            if (Date.now() > s) throw new Error("EXPORT_EXTRACT_FAILED");
+            await new Promise(e2 => setTimeout(e2, 800))
+        }
+    } finally {
+        try {
+            await chrome.tabs.remove(a.id)
+        } catch {}
+    }
+}
+
+/* 个人中心「我的题库」试卷页（/usertk/{bankId}p{paperId}.html）专用流程：
+ * 页面全局 window.userPaperInfo 含 title/bankId/paperXml（part→quesType→ques id 卷面结构），需登录态，
+ * 故从发起导出的当前标签页 MAIN world 读取；试题正文/答案/解析取移动站试题详情页
+ * __NUXT__.data[0].quesDetail（匿名可得），与单题导出同源。 */
+async function readUserPaperInfoFromTab(e) {
+    const t = await chrome.scripting.executeScript({
+        target: {
+            tabId: e
+        },
+        world: "MAIN",
+        func: () => {
+            try {
+                const e2 = window.userPaperInfo;
+                return e2 && e2.paperXml ? JSON.stringify({
+                    id: e2.id || "",
+                    title: e2.title || e2.name || "",
+                    bankId: String(e2.bankId || ""),
+                    paperXml: String(e2.paperXml || ""),
+                    quesCount: e2.quesCount || 0
+                }) : null
+            } catch {
+                return null
+            }
+        }
+    }).catch(() => null);
+    const a = t?.[0]?.result;
+    return a ? JSON.parse(a) : null
+}
+
+/* 精品专辑页（/thematiclist/...）不是普通试卷页：PC DOM 中已有按卷面顺序排列的
+ * .tk-quest-item，但移动站同路径只会进入 special_catalog，__NUXT__ 不含 paper。
+ * 因此先从用户正在浏览的 PC 页提取题目 id/bankId，再逐题读取移动站详情。 */
+async function readThematicPaperInfoFromTab(e) {
+    if (!e) throw new Error("EXPORT_EXTRACT_FAILED");
+    const t = await chrome.scripting.executeScript({
+        target: { tabId: e },
+        world: "MAIN",
+        func: () => {
+            try {
+                const items = [...document.querySelectorAll(".qml_paper.ques-list .tk-quest-item[questionid], .tk-quest-item[questionid], [questionid][bankid]")],
+                    seen = new Set,
+                    questions = [];
+                for (const item of items) {
+                    const id = String(item.getAttribute("questionid") || ""),
+                        bankId = String(item.getAttribute("bankid") || "");
+                    if (!/^\d+$/.test(id) || seen.has(id)) continue;
+                    seen.add(id), questions.push({ id, bankId })
+                }
+                if (!questions.length) return null;
+                const title = document.querySelector("main.special-topic-detail .exam-info h1, main.special-topic-detail .exam-info h2, main.special-topic-detail .exam-info h3")?.textContent?.trim()
+                    || document.title?.trim() || "精品专辑试卷";
+                return JSON.stringify({ title, questions })
+            } catch {
+                return null
+            }
+        }
+    }).catch(() => null);
+    const a = t?.[0]?.result;
+    return a ? JSON.parse(a) : null
+}
+
+/* 组卷中心 /zujuan/ 的试题篮由官方脚本异步初始化；页面稳定结构在
+ * ZujuanCom.Paper.Xml()/GetQuesIDList()，首屏 HTML 的 .ques-box 为空。 */
+async function readQuestionBasketInfoFromTab(e, t = 2e4) {
+    const a = Date.now() + t;
+    for (;;) {
+        const s = await chrome.scripting.executeScript({
+            target: { tabId: e },
+            world: "MAIN",
+            func: () => {
+                try {
+                    const paper = window.ZujuanCom?.Paper;
+                    if (!paper || "function" != typeof paper.Xml || "function" != typeof paper.GetQuesIDList) return null;
+                    const paperXml = String(paper.Xml() || ""), ids = (paper.GetQuesIDList() || []).map(String).filter(id => /^\d+$/.test(id));
+                    if (!paperXml || !ids.length) return null;
+                    const cookies = Object.fromEntries(String(document.cookie || "").split(";").map(v => v.trim().split(/=(.*)/s).slice(0, 2)));
+                    const user = window.userinfo || window.userInfo || {};
+                    return JSON.stringify({
+                        title: document.querySelector("#pui_maintitle")?.textContent?.trim() || "组卷网试题篮",
+                        bankId: String(cookies.bankId || window.tkBusiness?.tools?.getcookiebankid?.() || ""),
+                        userId: String(cookies.userId || user.UserID || user.userId || user.Id || user.id || ""),
+                        basketVersion: String(cookies.quesBasketVersion || cookies.questionBasketVersion || ""),
+                        paperXml,
+                        quesIds: ids
+                    })
+                } catch { return null }
+            }
+        }).catch(() => null);
+        const r = s?.[0]?.result;
+        if (r) return JSON.parse(r);
+        if (Date.now() > a) throw new Error("试题篮为空或尚未加载完成");
+        await new Promise(r => setTimeout(r, 300))
+    }
+}
+
+function basketContentHash(e) {
+    let t = 2166136261;
+    for (const a of String(e || "")) t = Math.imul(t ^ a.charCodeAt(0), 16777619);
+    return (t >>> 0).toString(36)
+}
+
+function buildQuestionBasketSourceUrl(e, t = "") {
+    /* URL/下载日志只保存用户标识指纹，不落组卷网 userId 明文。 */
+    const a = basketContentHash(String(e.userId || t || "anonymous")),
+        s = encodeURIComponent(String(e.bankId || "0").slice(0, 10)),
+        r = basketContentHash((e.quesIds || []).join(","));
+    return `https://zujuan.xkw.com/zujuan/?edt_basket=${a}.${s}.${r}`
+}
+
+/* paperXml → 有序试题 id 列表（顺序即卷面顺序；分组由题目自身 quesType 连续归并，与标准试卷流程一致） */
+function parseUserPaperQuesIds(e) {
+    const t = [];
+    for (const a of String(e || "").matchAll(/<ques\s[^>]*?\bid="(\d+)"/g)) t.push(a[1]);
+    return t
+}
+
+/* 批量取移动站试题详情：复用单个后台标签页顺序导航（WAF cookie 会话内复用，逐题轮询 __NUXT__）。
+ * 导航间隙可能读到上一题的 __NUXT__，必须校验 quesDetail.id 与目标 id 一致才接受。 */
+async function loadMobileQuesBatchViaTab(e, t = 2e4) {
+    if (!e.length) return [];
+    const a = await chrome.tabs.create({
+        url: e[0].url,
+        active: !1
+    });
+    try {
+        const s = [];
+        for (let r = 0; r < e.length; r++) {
+            r > 0 && await chrome.tabs.update(a.id, {
+                url: e[r].url
+            });
+            const i = Date.now() + t;
+            let n = null;
+            for (;;) {
+                const o = await chrome.scripting.executeScript({
+                    target: {
+                        tabId: a.id
+                    },
+                    world: "MAIN",
+                    func: e2 => {
+                        try {
+                            const t2 = window.__NUXT__?.data?.[0]?.quesDetail;
+                            return t2 && String(t2.id || "") === String(e2) ? JSON.stringify(t2) : /登录/.test(document.title || "") || document.querySelector('input[type="password"]') ? "login" : null
+                        } catch {
+                            return null
+                        }
+                    },
+                    args: [e[r].id]
+                }).catch(() => null),
+                    c = o?.[0]?.result;
+                if ("login" === c) throw new Error("请先登录组卷网后再使用导出功能");
+                if ("string" == typeof c && c.length > 2) {
+                    n = JSON.parse(c);
+                    break
+                }
+                if (Date.now() > i) throw new Error("EXPORT_EXTRACT_FAILED");
+                await new Promise(e2 => setTimeout(e2, 300))
+            }
+            s.push(n)
+        }
+        return s
+    } finally {
+        try {
+            await chrome.tabs.remove(a.id)
+        } catch {}
+    }
+}
+
+async function resolveZujuanUserPaperDoc(e, t) {
+    if (!t) throw new Error("EXPORT_EXTRACT_FAILED");
+    const a = await readUserPaperInfoFromTab(t);
+    if (!a?.paperXml) throw new Error("EXPORT_EXTRACT_FAILED");
+    const s = parseUserPaperQuesIds(a.paperXml);
+    if (!s.length) throw new Error("EXPORT_EXTRACT_FAILED");
+    const r = String(a.bankId || ""),
+        i = s.map(e2 => ({
+            id: e2,
+            url: `https://mzujuan.xkw.com/${r}q${e2}.html?target=ques_detail&quesId=${e2}&subjectId=${r}`
+        })),
+        n = await loadMobileQuesBatchViaTab(i),
+        o = {
+            title: a.title || "",
+            pageTitle: a.title || "",
+            paperTitle: a.title || "",
+            subjectMenuTitle: "",
+            from: n[0]?.from || "",
+            learnGradeName: n[0]?.paperSource?.[0]?.learnGradeName || "",
+            learnGrade: n[0]?.paperSource?.[0]?.learnGrade || null,
+            subjectId: r,
+            quesList: n.map(normalizeZujuanPaperRawQuestion)
+        };
+    return withZujuanSingleListening({
+        title: buildZujuanTitle(o),
+        pageTitle: o.title,
+        paperTitle: o.title,
+        sourceUrl: e,
+        sourceSite: "zujuan",
+        sourcePageType: "paper",
+        sourceLabel: "mobile_fetch_usertk",
+        examSource: parseSourceText(o.from),
+        groups: groupZujuanQuestions(o.quesList)
+    }, o.quesList)
+}
+
+async function resolveZujuanThematicPaperDoc(e, t, sourceLabel = "mobile_fetch_thematic") {
+    /* 「上好课」等 questionList 页（/shanghaoke/{id}.html、章节落地页）与普通 PC 试卷页同构：
+     * 题干已完整直出在 DOM。优先 PC 站 DOM 直抓（无答案、不触发移动站 WAF），
+     * 失败（页面结构不同/题目为空）才回退移动站逐题。 */
+    if (t) {
+        try {
+            const domDoc = await resolveZujuanPaperDocFromDOM(e, t, true);
+            if (domDoc) return await setDebug("export:questionlist_pc_dom:success", null), domDoc;
+        } catch (err) {
+            await setDebug("export:questionlist_pc_dom:error", String(err?.message || err || "unknown"))
+        }
+    }
+    const a = await readThematicPaperInfoFromTab(t);
+    if (!a?.questions?.length) throw new Error("EXPORT_EXTRACT_FAILED");
+    const s = String(a.questions.find(q => q.bankId)?.bankId || ""),
+        r = a.questions.map(q => ({
+            id: q.id,
+            url: `https://mzujuan.xkw.com/${q.bankId||s}q${q.id}.html?target=ques_detail&quesId=${q.id}&subjectId=${q.bankId||s}`
+        }));
+    if (!s || r.some(q => !/\/\d+q\d+\.html/.test(q.url))) throw new Error("EXPORT_EXTRACT_FAILED");
+    const i = await loadMobileQuesBatchViaTab(r, 3e4),
+        n = {
+            title: a.title || "精品专辑试卷",
+            from: i[0]?.from || "",
+            learnGradeName: i[0]?.paperSource?.[0]?.learnGradeName || "",
+            learnGrade: i[0]?.paperSource?.[0]?.learnGrade || null,
+            subjectId: s,
+            quesList: i.map(normalizeZujuanPaperRawQuestion)
+        };
+    return withZujuanSingleListening({
+        title: buildZujuanTitle(n),
+        pageTitle: n.title,
+        paperTitle: n.title,
+        sourceUrl: e,
+        sourceSite: "zujuan",
+        sourcePageType: "paper",
+        sourceLabel,
+        examSource: parseSourceText(n.from),
+        groups: groupZujuanQuestions(n.quesList)
+    }, n.quesList)
+}
+
+/* 组卷中心画布 PC DOM 直抓（与 paper/thematiclist 同策略）：题面/选项取自 .ques-item[questionid] 画布，
+ * 题型/难度/知识点/来源取自 ZujuanCom.Paper.Xml() 的 <ques> 属性；不依赖移动站，规避 mzujuan WAF 批量拒绝。
+ * PC 画布无答案/解析数据源，answer/parse 置空（与专题页无答案先例一致）。画布展示序即卷面顺序。 */
+async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
+    if (!tabId) throw new Error("EXPORT_EXTRACT_FAILED");
+    const exec = f => chrome.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        world: "MAIN",
+        func: f
+    }).then(r => r?.[0]?.result ?? null).catch(() => null);
+    /* 官方脚本异步初始化画布，轮询等待题目出现（最长 20s） */
+    const deadline = Date.now() + 2e4;
+    for (;;) {
+        const ready = await exec(() => !!document.querySelector(".ques-item[questionid]"));
+        if (ready || Date.now() > deadline) break;
+        await new Promise(r => setTimeout(r, 400))
+    }
+    const raw = await exec(() => {
+        try {
+            const title = document.querySelector("#pui_maintitle")?.textContent?.trim()
+                || document.querySelector(".qml-title, .exam-title .title-txt .txt")?.textContent?.trim()
+                || "组卷网试题篮";
+            let meta = {},
+                bankId = "",
+                ret = window.ZujuanCom?.Paper?.Xml?.();
+            try {
+                const xml = String(ret || "");
+                const bankMatch = xml.match(/<bankid\s+id="(\d+)"/i);
+                bankId = String(bankMatch?.[1] || "");
+                for (const m of xml.matchAll(/<ques\b([^>]*)\/?>/g)) {
+                    const attrs = {};
+                    for (const am of m[1].matchAll(/([a-zA-Z]+)="([^"]*)"/g)) attrs[am[1]] = am[2];
+                    if (attrs.id && /^\d+$/.test(attrs.id)) meta[attrs.id] = attrs
+                }
+            } catch {}
+            if (!bankId) bankId = String(document.querySelector(".tk-quest-item.quesroot")?.getAttribute("bankid") || "").trim();
+            const questions = [];
+            for (const item of document.querySelectorAll(".ques-item[questionid]")) {
+                const id = String(item.getAttribute("questionid") || "");
+                if (!/^\d+$/.test(id) || questions.some(q => q.id === id)) continue;
+                const root = item.querySelector(".tk-quest-item.quesroot") || item;
+                const cnt = root.querySelector(".wrapper.quesdiv .exam-item__cnt") || root.querySelector(".exam-item__cnt");
+                let body = cnt?.innerHTML || "";
+                body = body.replace(/<span class="quesindex">[\s\S]*?<\/span>/i, "")
+                    .replace(/<span class="tips"[^>]*><\/span>/i, "")
+                    .replace(/^\s*<span><\/span>\s*/, "")
+                    .replace(/^(\s*<(?:p|span|div)[^>]*>\s*)*\d+[\.、．]\s*/, "")
+                    .trim();
+                const m = meta[id] || {};
+                questions.push({
+                    quesBody: body || "",
+                    quesAnswer: "",
+                    quesParse: "",
+                    quesAudio: "",
+                    quesChildNum: Number(m.childnum) || 0,
+                    qbmId: "",
+                    categoriesInfo: (m.categoryname || "").trim(),
+                    quesTypeName: (m.qyname || "").trim(),
+                    quesDiffName: (m.qdname || "").trim(),
+                    from: (m.titleAbbreviation || m.title || "").trim(),
+                    id,
+                    updateTime: ""
+                })
+            }
+            return questions.length ? JSON.stringify({
+                title,
+                bankId,
+                questions
+            }) : null
+        } catch {
+            return null
+        }
+    });
+    if (!raw) throw new Error("EXPORT_EXTRACT_FAILED");
+    const parsed = JSON.parse(raw);
+    if (!parsed.questions?.length) throw new Error("EXPORT_EXTRACT_FAILED");
+    const subjectId = String(parsed.bankId || "");
+    if (!/^\d+$/.test(subjectId)) throw new Error("EXPORT_EXTRACT_FAILED");
+    const list = parsed.questions.map(q => normalizeZujuanPaperRawQuestion({
+        ...q,
+        quesBody: absolutizeMobileHtml(q.quesBody),
+        quesAnswer: absolutizeMobileHtml(q.quesAnswer),
+        quesParse: absolutizeMobileHtml(q.quesParse)
+    }));
+    const fromText = list[0]?.from || "";
+    const basketUrl = /^https:\/\//i.test(String(pageUrl || "")) ? pageUrl : "https://zujuan.xkw.com/zujuan/";
+    return withZujuanSingleListening({
+        title: buildZujuanTitle({
+            subjectMenuTitle: "",
+            learnGradeName: "",
+            from: fromText,
+            paperTitle: parsed.title,
+            pageTitle: parsed.title,
+            title: parsed.title,
+            subjectId
+        }),
+        pageTitle: parsed.title,
+        paperTitle: parsed.title,
+        sourceUrl: basketUrl,
+        sourceSite: "zujuan",
+        sourcePageType: "paper",
+        sourceLabel: "pc_dom_question_basket",
+        examSource: parseSourceText(fromText),
+        groups: groupZujuanQuestions(list)
+    }, list)
+}
+
+async function resolveZujuanQuestionBasketDoc(e, t, a = null, s = !1) {
+    /* 组卷中心画布 PC DOM 直抓优先（规避移动站 WAF）；intelligentPaper（s=true）画布结构未实测，保持原移动站取数 */
+    if (!s) {
+        try {
+            const d = await resolveZujuanQuestionBasketDocFromDOM(t, e);
+            return await setDebug("export:basket_pc_dom:success", null), d
+        } catch (err) {
+            await setDebug("export:basket_pc_dom:error", String(err?.message || err || "unknown"))
+        }
+    }
+    const r = a || await readQuestionBasketInfoFromTab(t);
+    const i = Array.isArray(r?.quesIds) && r.quesIds.length ? r.quesIds : parseUserPaperQuesIds(r?.paperXml || "");
+    const n = String(r?.bankId || "");
+    if (!n || !i.length) throw new Error("EXPORT_EXTRACT_FAILED");
+    const o = await loadMobileQuesBatchViaTab(i.map(id => ({
+        id,
+        url: `https://mzujuan.xkw.com/${n}q${id}.html?target=ques_detail&quesId=${id}&subjectId=${n}`
+    })));
+    const l = {
+        title: r.title || "组卷网试题篮",
+        from: o[0]?.from || "",
+        learnGradeName: o[0]?.paperSource?.[0]?.learnGradeName || "",
+        learnGrade: Number(o[0]?.paperSource?.[0]?.learnGrade || o[0]?.learnGrade || 0),
+        categoriesInfo: o[0]?.categoriesInfo || "",
+        subjectId: n,
+        quesList: o.map(normalizeZujuanPaperRawQuestion)
+    };
+    const u = new Date,
+        p = `${u.getMonth()+1}月${u.getDate()}日${u.getHours()}点${String(u.getMinutes()).padStart(2,"0")}分的智能组卷`;
+    return withZujuanSingleListening({
+        title: s ? p : buildZujuanTitle(l), pageTitle: s ? p : l.title, paperTitle: s ? p : l.title,
+        sourceUrl: s ? e : buildQuestionBasketSourceUrl(r), sourceSite: "zujuan", sourcePageType: "paper",
+        sourceLabel: s ? "mobile_fetch_intelligent_paper" : "mobile_fetch_question_basket",
+        examSource: parseSourceText(l.from),
+        groups: groupZujuanQuestions(l.quesList)
+    }, l.quesList)
+}
+
+
+async function resolveZujuanQuestionDocFromMobile(e) {
+    const t = buildZujuanMobileQuestionUrl(e);
+    if (!t) throw new Error("EXPORT_EXTRACT_FAILED");
+    const a = await fetchMobilePage(t),
+        s = a?.data?.[0]?.quesDetail;
+    if (!s) throw new Error("EXPORT_EXTRACT_FAILED");
+    const r = new URL(t).searchParams.get("subjectId") || "";
+    return buildZujuanQuestionDoc({
+        title: s.title || "",
+        pageTitle: s.title || "",
+        paperTitle: s.paperSource?.[0]?.paperTitle || "",
+        subjectMenuTitle: "",
+        quesBody: s.quesBody || "",
+        quesAnswer: s.quesAnswer || "",
+        quesParse: s.quesParse || "",
+        categoriesInfo: s.categoriesInfo || "",
+        quesTypeName: s.quesType?.name || "",
+        quesDiffName: s.quesDiff?.name || "",
+        from: s.from || "",
+        id: s.id || "",
+        updateTime: s.updateTime || "",
+        learnGradeName: s.paperSource?.[0]?.learnGradeName || "",
+        learnGrade: s.paperSource?.[0]?.learnGrade || null,
+        subjectId: r
+    }, t, "mobile_fetch")
+}
+async function resolveZujuanPaperDocFromMobile(e, currentTabId = null) {
+    let isThematic = !1;
+    try {
+        isThematic = /\/thematiclist\/[\w-]+\.html/i.test(new URL(e).pathname)
+    } catch {}
+    if (isThematic) return resolveZujuanThematicPaperDoc(e, currentTabId);
+    const t = buildZujuanMobilePaperUrl(e);
+    if (!t) throw new Error("EXPORT_EXTRACT_FAILED");
+    /* 分享试卷（share-paper / recorddetail）：经分享接口取数，组装逻辑与普通试卷一致 */
+    if (/recorddetail/i.test(t)) {
+        const a2 = await loadSharePaperViaTab(t),
+            s2 = {
+                title: a2.title || "",
+                pageTitle: a2.title || "",
+                paperTitle: a2.title || "",
+                subjectMenuTitle: "",
+                from: a2.quesList?.[0]?.from || "",
+                learnGradeName: a2.quesList?.[0]?.paperSource?.[0]?.learnGradeName || "",
+                learnGrade: a2.quesList?.[0]?.paperSource?.[0]?.learnGrade || null,
+                subjectId: String(a2.bankId || ""),
+                quesList: a2.quesList.map(normalizeZujuanPaperRawQuestion)
+            };
+        return withZujuanSingleListening({
+            title: buildZujuanTitle(s2),
+            pageTitle: s2.pageTitle || s2.title,
+            paperTitle: s2.paperTitle || s2.title,
+            sourceUrl: t,
+            sourceSite: "zujuan",
+            sourcePageType: "paper",
+            sourceLabel: "mobile_fetch_share",
+            examSource: parseSourceText(s2.from),
+            groups: groupZujuanQuestions(s2.quesList)
+        }, s2.quesList)
+    }
+    const a = await fetchMobilePage(t),
+        s = a?.data?.[0],
+        r = s?.paper,
+        /* 精品专辑页（thematiclist）：题目列表在 paper.queses（普通试卷页在 paper.quesList），顶层 quesList 兜底 */
+        n = Array.isArray(r?.quesList) ? r.quesList : Array.isArray(r?.queses) ? r.queses : Array.isArray(s?.quesList) ? s.quesList : null;
+    if (!r || !n) throw new Error("EXPORT_EXTRACT_FAILED");
+    const i = new URL(t).searchParams.get("subjectId") || String(s?.bankId || ""),
+        o = {
+            title: r.title || "",
+            pageTitle: r.title || "",
+            paperTitle: r.title || "",
+            subjectMenuTitle: "",
+            from: r.from || n[0]?.from || "",
+            learnGradeName: n[0]?.paperSource?.[0]?.learnGradeName || "",
+            learnGrade: n[0]?.paperSource?.[0]?.learnGrade || null,
+            subjectId: i,
+            quesList: n.map(normalizeZujuanPaperRawQuestion)
+        };
+    return withZujuanSingleListening({
+        title: buildZujuanTitle(o),
+        pageTitle: o.pageTitle || o.paperTitle || o.title || "",
+        paperTitle: o.paperTitle || o.pageTitle || o.title || "",
+        sourceUrl: t,
+        sourceSite: "zujuan",
+        sourcePageType: "paper",
+        sourceLabel: "mobile_fetch",
+        examSource: parseSourceText(o.from),
+        groups: groupZujuanQuestions(o.quesList)
+    }, o.quesList)
+}
+
+/* PC 站普通试卷页（/{subjectId}p{paperId}.html）DOM 直抓：不依赖移动站，规避 mzujuan WAF 批量拒绝。
+ * 结构依据实测：题干/选项在 .quesdiv .exam-item__cnt（含 optionsTable 选项表），答案/解析在
+ * .quesdiv .exam-item__opt .item.answer / .item.analysis 等，题型/难度在 .ques-additional .left-msg .info-cnt，
+ * 来源在 .ques-src；#isshowAnswer 勾选（登录态下）会触发答案注入。
+ * 产出与 normalizeZujuanPaperRawQuestion 同构，直接复用 groupZujuanQuestions / withZujuanSingleListening
+ * 既有排版管道（题干 + 排版 + 可带答案），不触碰移动站域名。 */
+async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswers = false) {
+    if (!currentTabId) throw new Error("EXPORT_EXTRACT_FAILED");
+    const tabId = currentTabId,
+        exec = f => chrome.scripting.executeScript({
+            target: {
+                tabId,
+                frameIds: [0]
+            },
+            world: "MAIN",
+            func: f
+        }).then(r => r?.[0]?.result ?? null).catch(() => null);
+    /* 1) 触发"显示全部答案和解析"（若有开关且未展开）。未登录时页面注入 .item.no-login 提示、
+     * 答案节点保持为空——此时仍返回题干（题目正文始终可下），仅标记缺答案。
+     * 精品专辑页（thematiclist）无此开关：返回 false，跳过答案轮询直接抓题干+选项。 */
+    const hasAnswerSwitch = await exec(() => {
+        try {
+            const label = document.querySelector('label[for="isshowAnswer"]');
+            if (label) { label.click(); return !0 }
+            const box = document.querySelector("#isshowAnswer");
+            if (box) { !box.checked && (box.checked = !0, box.dispatchEvent(new Event("change", { bubbles: !0 }))); return !0 }
+            return !1
+        } catch { return !1 }
+    });
+    /* 轮询等待答案注入结果（登录注入真实答案 / 未登录注入 .no-login 提示），最多 6s */
+    if (hasAnswerSwitch) {
+        const deadline = Date.now() + 6e3;
+        for (;;) {
+            const st = await exec(() => {
+                try {
+                    const opt = document.querySelector(".tk-quest-item .quesdiv .exam-item__opt");
+                    if (!opt) return "ready";
+                    const aEl = opt.querySelector(".item.answer");
+                    return aEl && (aEl.innerHTML?.trim() || opt.querySelector(".item.no-login")) ? "ready" : "waiting"
+                } catch {
+                    return "ready"
+                }
+            });
+            if ("waiting" !== st || Date.now() > deadline) break;
+            await new Promise(r => setTimeout(r, 700))
+        }
+    }
+    /* 2) DOM 抓取全部题目 */
+    const raw = await exec(() => {
+        try {
+            const title = document.querySelector(".exam-title .title-txt .txt")?.textContent?.trim()
+                || document.querySelector("main.special-topic-detail .exam-info h1, main.special-topic-detail .exam-info h2, main.special-topic-detail .exam-info h3")?.textContent?.trim()
+                || document.title?.replace(/\s*-\s*组卷网\s*$/i, "").trim() || "";
+            const items = [...document.querySelectorAll(".tk-quest-item[questionid]")].filter(el => el.closest(".tk-quest-item") === el),
+                seen = new Set,
+                questions = [];
+            for (const item of items) {
+                const id = String(item.getAttribute("questionid") || "");
+                if (!/^\d+$/.test(id) || seen.has(id)) continue;
+                seen.add(id);
+                const cnt = item.querySelector(".quesdiv .exam-item__cnt") || item.querySelector(".exam-item__cnt");
+                let body = cnt?.innerHTML || "";
+                if (!body) {
+                    const qd = item.querySelector(".quesdiv");
+                    body = qd ? (qd.innerHTML || "").replace(/<div[^>]*class="[^>]*exam-item__opt[^>]*"[^>]*>[\s\S]*$/i, "") : ""
+                }
+                body = body.replace(/^(\s*<(?:p|span|div)[^>]*>\s*)*\d+[\.、．]\s*/, "").trim();
+                const opt = item.querySelector(".quesdiv .exam-item__opt");
+                let answer = "", parse = "", categoriesInfo = "";
+                if (opt) {
+                    const aEl = opt.querySelector(".item.answer"),
+                        needLogin = !!opt.querySelector(".item.no-login");
+                    if (aEl && !needLogin) answer = aEl.innerHTML || "";
+                    const pEl = opt.querySelector(".item.analysis, .item.parse, .item.jiexi, [class*='parse'], [class*='analysis'], [class*='jiexi']");
+                    if (pEl && !needLogin) parse = pEl.innerHTML || "";
+                    const kEl = opt.querySelector(".item.knowlegde, .item.knowledge");
+                    if (kEl) categoriesInfo = [...kEl.querySelectorAll("a.knowledge-name")].map(el => el.textContent?.trim() || "").filter(Boolean).join(",")
+                }
+                const infoCnt = [...item.querySelectorAll(".ques-additional .left-msg .info-cnt")].map(el => el.textContent?.trim() || ""),
+                    srcEl = item.querySelector(".ques-src");
+                let fromTxt = srcEl?.textContent?.trim() || "";
+                fromTxt = fromTxt.replace(/^来源[:：]\s*/, "").trim();
+                questions.push({
+                    quesBody: body || "",
+                    quesAnswer: answer || "",
+                    quesParse: parse || "",
+                    quesAudio: "",
+                    quesChildNum: Number(item.getAttribute("queschildnum")) || 0,
+                    qbmId: "",
+                    categoriesInfo,
+                    quesTypeName: infoCnt[0] || "",
+                    quesDiffName: infoCnt[1] || "",
+                    from: fromTxt,
+                    id,
+                    updateTime: ""
+                })
+            }
+            return questions.length ? JSON.stringify({ title, bankId: (items[0]?.getAttribute("bankid") || "").trim(), questions }) : null
+        } catch {
+            return null
+        }
+    });
+    if (!raw) throw new Error("EXPORT_EXTRACT_FAILED");
+    const parsed = JSON.parse(raw);
+    if (!parsed.questions?.length) throw new Error("EXPORT_EXTRACT_FAILED");
+    let subjectId = String(parsed.bankId || "");
+    if (!/^\d+$/.test(subjectId)) {
+        try {
+            subjectId = new URL(e).pathname.match(/\/(\d+)p/i)?.[1] || ""
+        } catch {}
+    }
+    const list = parsed.questions.map(q => normalizeZujuanPaperRawQuestion({
+        ...q,
+        quesBody: absolutizeMobileHtml(q.quesBody),
+        quesAnswer: absolutizeMobileHtml(q.quesAnswer),
+        quesParse: absolutizeMobileHtml(q.quesParse)
+    }));
+    // 专题题目列表的 PC DOM 常常只有题干；空答案时继续走移动站题目详情补取。
+    if (requireAnswers && list.every(q => !String(q.quesAnswer || "").trim())) return null;
+    const fromText = list[0]?.from || "";
+    return withZujuanSingleListening({
+        title: buildZujuanTitle({
+            subjectMenuTitle: "",
+            learnGradeName: "",
+            from: fromText,
+            paperTitle: parsed.title,
+            pageTitle: parsed.title,
+            title: parsed.title,
+            subjectId
+        }),
+        pageTitle: parsed.title,
+        paperTitle: parsed.title,
+        sourceUrl: e,
+        sourceSite: "zujuan",
+        sourcePageType: "paper",
+        sourceLabel: "pc_dom",
+        examSource: parseSourceText(fromText),
+        groups: groupZujuanQuestions(list)
+    }, list)
+}
+
+/* 组卷 paper 统一路由：普通 PC 试卷页（/{subjectId}p{paperId}.html）优先 DOM 直抓（不碰移动站），
+ * 其余类型（分享/云端组卷/试题篮等仍走接口取数，不触发普通页批量抓取 WAF）。 */
+async function resolveZujuanPaperDocFromZujuan(e, currentTabId = null) {
+    let isPlain = !1;
+    try {
+        const _p = new URL(e).pathname;
+        isPlain = /^\/(\d+)p\d+\.html$/i.test(_p) || /^\/thematiclist\/[\w-]+\.html$/i.test(_p)
+    } catch {}
+    if (isPlain && currentTabId) {
+        try {
+            const doc = await resolveZujuanPaperDocFromDOM(e, currentTabId);
+            return await setDebug("export:paper_pc_dom:success", null), doc
+        } catch (err) {
+            await setDebug("export:paper_pc_dom:error", String(err?.message || err))
+        }
+    }
+    return resolveZujuanPaperDocFromMobile(e, currentTabId)
+}
+
+/* 纯前端听力地址生成：无后端转换服务，直接按整卷 qbm 组装播放地址（与原版回退逻辑一致）。
+ * 无 qbm 时仅保留已提取的单题音频信息，预览页不渲染听力二维码。 */
+async function attachListeningManifest(e) {
+    const t = e?.listeningAudio;
+    if (!t || "zujuan" !== e.sourceSite || "paper" !== e.sourcePageType) return;
+    const a = /^\d{6,24}$/.test(String(t.wholeQbm || ""));
+    if (!a) return;
+    const e2 = new URL("https://audio.examdownload.top/");
+    e2.searchParams.set("q", String(t.wholeQbm)), e2.searchParams.set("audioNo", "0"), e2.searchParams.set("speed", "1");
+    t.playerBaseUrl = e2.href, t.availableModes = { whole: !0, single: !1 }
+}
+
+/* 包装层：导出全程 SW 保活（含异常路径），防止长操作期间 SW 被回收导致流程假死 */
+async function startExport(e) {
+    startKeepAlive();
+    try {
+        await requireActiveLicense();
+        return await startExportInner(e)
+    } finally {
+        stopKeepAlive()
+    }
+}
+async function startExportInner(e) {
+    try {
+        await setDebug("export:start", null), setExportPatch({
+            status: "prechecking",
+            lastErrorCode: null,
+            lastResult: null,
+            startedAt: (new Date).toISOString(),
+            format: "docx",
+            sourceSite: e.sourceSite,
+            sourcePageType: e.sourcePageType
+        }), await persist(), await setDebug("export:preflight", null);
+        /* 试题篮 URL 固定，必须在取数前用当前登录用户、学科和有序 tid 生成内容身份，
+         * 避免不同用户或不同时刻的篮子被缓存误判为同一份。 */
+        let basketInfo = null, basketTab = null;
+        if ("zujuan" === e.sourceSite && ["questionBasket", "intelligentPaper"].includes(e.sourcePageType)) {
+            if (e.tabId) basketTab = await chrome.tabs.get(e.tabId).catch(() => null);
+            if (!basketTab) basketTab = (await chrome.tabs.query({ active: !0, currentWindow: !0 }))?.[0] || null;
+            if (!basketTab?.id) throw new Error("EXPORT_EXTRACT_FAILED");
+            basketInfo = await readQuestionBasketInfoFromTab(basketTab.id);
+            if ("questionBasket" === e.sourcePageType) e = { ...e, sourceUrl: buildQuestionBasketSourceUrl(basketInfo, state.license.installationId) }
+        }
+        /* 纯前端：本地生成导出凭证（无后端，不做扣额/去重） */
+        const t = {
+            requestId: crypto.randomUUID(),
+            requestToken: crypto.randomUUID(),
+            challenge: crypto.randomUUID()
+        };
+        setExportPatch({
+            status: "rendering",
+            requestId: t.requestId
+        }), await persist();
+        let a = basketTab;
+        if (e.tabId) {
+            try {
+                a = await chrome.tabs.get(e.tabId)
+            } catch {}
+        }
+        if (!a) {
+            const s = await chrome.tabs.query({
+                active: !0,
+                currentWindow: !0
+            });
+            a = s?.[0]
+        }
+        if (!a?.id) return {
+            success: !1,
+            error: humanError("EXPORT_EXTRACT_FAILED"),
+            code: "EXPORT_EXTRACT_FAILED"
+        };
+        let s = null;
+        // 组卷：答案/解析只能来自移动站 __NUXT__（PC 页 DOM 不含答案）。
+        // 整卷优先命中 30 天本地缓存；未命中才访问移动站。抓取失败必须显式报错，
+        // 绝不能静默回退到无答案的 PC DOM 文档。
+        if ("zujuan" === e.sourceSite && a?.url) {
+            s = await getCachedZujuanDoc(e);
+            setExportPatch({ zujuanCacheHit: Boolean(s) }), await persist();
+            if (s) await setDebug("export:zujuan_cache_hit", null);
+            else {
+                await setDebug("export:zujuan_cache_miss", null);
+                try {
+                    s = "intelligentPaper" === e.sourcePageType ? await resolveZujuanQuestionBasketDoc(a.url, a.id, basketInfo, !0) : "questionBasket" === e.sourcePageType ? await resolveZujuanQuestionBasketDoc(a.url, a.id, basketInfo) : "userPaper" === e.sourcePageType ? await resolveZujuanUserPaperDoc(a.url, a.id) : "questionList" === e.sourcePageType ? await resolveZujuanThematicPaperDoc(a.url, a.id, "mobile_fetch_question_list") : "paper" === e.sourcePageType ? await resolveZujuanPaperDocFromZujuan(a.url, a.id) : await resolveZujuanQuestionDocFromMobile(a.url), await setDebug("export:resolve_mobile_doc:success", null)
+                } catch (e) {
+                    throw await setDebug("export:resolve_mobile_doc:error", String(e?.message || e || "unknown")), e
+                }
+            }
+        }
+        await setDebug("export:send_to_content", null);
+        /* content 侧异常（插件更新后页面未刷新导致上下文失效、监听器丢失、极端慢）时
+         * sendMessage 可能永不返回，必须带超时，杜绝 startExport 永久挂起、页面卡在准备预览。 */
+        const sendRunLocal = () => chrome.tabs.sendMessage(a.id, {
+                type: "RUN_LOCAL_EXPORT",
+                payload: {
+                    requestId: t.requestId,
+                    requestToken: t.requestToken,
+                    challenge: t.challenge,
+                    sourceDoc: s
+                }
+            }, {
+                frameId: 0
+            }),
+            withTimeout = (e2, t2) => Promise.race([e2, new Promise((e3, n2) => setTimeout(() => n2(new Error("EXPORT_CONTENT_TIMEOUT")), t2))]);
+        let r = null;
+        try {
+            r = await withTimeout(sendRunLocal(), 5 * 60e3);
+        } catch (u) {
+            const m = String(u?.message || u);
+            if (!m.includes("Receiving end does not exist") && !m.includes("EXPORT_CONTENT_TIMEOUT")) throw u;
+            // 页面无 content script 或响应超时（插件安装/更新后页面未刷新）：动态注入后重试一次
+            await setDebug("export:inject_content_retry", null);
+            await chrome.scripting.executeScript({
+                target: {
+                    tabId: a.id,
+                    frameIds: [0]
+                },
+                files: ["model.js", "content.js"]
+            });
+            r = await withTimeout(sendRunLocal(), 5 * 60e3);
+        }
+        if (!r?.success) {
+            const e = r?.code || "EXPORT_RENDER_DOCX_FAILED";
+            setExportPatch({
+                status: "failed",
+                lastResult: "failed",
+                lastErrorCode: e
+            }), await setDebug("export:content_error", String(e)), await persist();
+            return {
+                success: !1,
+                error: humanError(e),
+                code: e
+            }
+        }
+        await setDebug("export:open_preview", null);
+        const i = r.doc;
+        await attachListeningManifest(i);
+        const c = crypto.randomUUID();
+        previewJobs[c] = {
+            id: c,
+            requestId: t.requestId,
+            requestToken: t.requestToken,
+            challenge: t.challenge,
+            doc: i,
+            createdAt: (new Date).toISOString()
+        }, cleanupPreviewJobs(), await persist();
+        const u = chrome.runtime.getURL(`preview.html?id=${encodeURIComponent(c)}`);
+        const previewTab = await chrome.tabs.create({ url: u, active: !0 });
+        if (!previewTab?.id) throw new Error("EXPORT_PREVIEW_OPEN_FAILED");
+        s && await cacheZujuanDoc(e, s);
+        return setExportPatch({
+            status: "success",
+            lastResult: "success",
+            lastErrorCode: null
+        }), await setDebug("export:success", null), await persist(), {
+            success: !0,
+            state: state
+        }
+    } catch (e) {
+        // 组卷移动端抓取抛的是无 code 的 Error（如 "EXPORT_EXTRACT_FAILED" / 中文登录提示），
+        // 必须带上 message，否则会误报成 EXPORT_COMMIT_FAILED。
+        const t = e?.code || e?.message || "EXPORT_COMMIT_FAILED";
+        return setExportPatch({
+            status: "failed",
+            lastResult: "failed",
+            lastErrorCode: t
+        }), await setDebug("export:exception", String(t)), await persist(), {
+            success: !1,
+            error: humanError(t),
+            code: t
+        }
+    }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+    ensureInitialized()
+}), chrome.runtime.onStartup.addListener(() => {
+    ensureInitialized()
+}), ensureInitialized(), chrome.runtime.onMessage.addListener((e, t, a) => ((async () => {
+    try {
+        if (await ensureInitialized(), await syncStateFromStorage(), e.type === MSG.STATE_GET) return a({
+            success: !0,
+            state: state
+        });
+        if (e.type === MSG.LICENSE_ACTIVATE) {
+            if (!e.payload?.key) return a({ success: !1, error: "请输入卡密" });
+            await saveLicense(await activateLicense(state.license, e.payload.key));
+            return a({ success: !0, license: state.license })
+        }
+        if (e.type === MSG.LICENSE_STATUS) {
+            if (!state.license.token) return a({ success: !0, license: state.license });
+            await requireActiveLicense();
+            return a({ success: !0, license: state.license })
+        }
+        if (e.type === MSG.LICENSE_REQUIRE) {
+            await requireActiveLicense();
+            return a({ success: !0, license: state.license })
+        }
+        if (e.type === MSG.LICENSE_DEACTIVATE) {
+            await saveLicense(await deactivateLicense(state.license));
+            return a({ success: !0, license: state.license })
+        }
+        if (e.type === MSG.START_EXPORT) return a(await startExport(e.payload));
+        if (e.type === MSG.RESOLVE_SOURCE_DOC) {
+            if ("zujuan" === e.payload?.sourceSite && e.payload?.pageUrl) {
+                const senderTabId = t.tab?.id,
+                    n = "intelligentPaper" === e.payload?.sourcePageType ? await resolveZujuanQuestionBasketDoc(e.payload.pageUrl, senderTabId, null, !0) : "questionBasket" === e.payload?.sourcePageType ? await resolveZujuanQuestionBasketDoc(e.payload.pageUrl, senderTabId) : "userPaper" === e.payload?.sourcePageType ? await resolveZujuanUserPaperDoc(e.payload.pageUrl, senderTabId) : "questionList" === e.payload?.sourcePageType ? await resolveZujuanThematicPaperDoc(e.payload.pageUrl, senderTabId, "mobile_fetch_question_list") : "paper" === e.payload?.sourcePageType ? await resolveZujuanPaperDocFromZujuan(e.payload.pageUrl, senderTabId) : await resolveZujuanQuestionDocFromMobile(e.payload.pageUrl);
+                return a({
+                    success: !0,
+                    doc: n
+                })
+            }
+            return a({
+                success: !1,
+                error: "Unsupported source resolution"
+            })
+        }
+        return a({
+            success: !1,
+            error: "Unknown message"
+        })
+    } catch (e) {
+        return await setDebug("worker:exception", String(e?.message || e)), a({
+            success: !1,
+            error: e?.message || "后台初始化失败",
+            code: e?.code || null
+        })
+    }
+})(), !0));

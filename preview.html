@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>导出预览</title>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <script defer src="vendor/katex/katex.min.js"></script>
+  <script src="paged-config.js"></script>
+  <script defer src="vendor/pagedjs/paged.polyfill.js"></script>
+  <style>
+    body{margin:0;font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f3f4f6;color:#111827}
+    .page-shell{max-width:1400px;margin:0 auto;padding:16px;display:grid;grid-template-columns:1fr 300px;gap:18px;}
+    .preview-column{display:flex;flex-direction:column;gap:16px;min-width:0}
+    .preview-column > *{min-width:0}
+    .settings-column{display:flex;flex-direction:column;gap:16px}
+    .settings-panel{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.08);position:sticky;top:16px;max-height:calc(100vh - 32px);overflow:auto}
+    .settings-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
+    .settings-header strong{font-size:16px}
+    .settings-meta{display:none;font-size:12px;color:#6b7280;line-height:1.6}
+    #meta{display:none}
+    .actions{display:flex;flex-wrap:wrap;gap:10px}
+    button{border:1px solid rgba(17,24,39,.16);background:#fff;color:#111827;border-radius:10px;padding:10px 14px;cursor:pointer;font:inherit}
+    .primary{background:#111827;border-color:#111827;color:#fff}
+    .control-group{display:flex;flex-direction:column;align-items:flex-start;gap:12px}
+    .control-item{display:flex;flex-direction:column;gap:8px;font-size:13px}
+    .control-item label{font-weight:600}
+    .control-item input[type="text"],.control-item select{border:1px solid #d1d5db;border-radius:8px;padding:10px 12px;font:inherit}
+    .control-item input[type="checkbox"]{width:auto}
+    .control-inline{display:flex;align-items:center;gap:8px}
+    .input-group{display:flex;flex-wrap:wrap;gap:10px}
+    .input-group label{display:flex;align-items:center;gap:8px;cursor:pointer}
+    .note{font-size:12px;color:#6b7280;line-height:1.6}
+    .paper-title{font-size:16pt;text-align:center;margin:0 0 18px}
+    table.paper-heading{width:100%;table-layout:fixed;border:0;margin:0 0 18px}
+    table.paper-heading td{border:0!important;padding:0;vertical-align:middle}
+    table.paper-heading .paper-title{margin:0;padding:0 10px}
+    .listening-qr{text-align:center;line-height:1.25;color:#374151;font-size:9pt}
+    .listening-qr img{display:block;width:88px;height:88px;margin:0 auto 4px}
+    .listening-qr a{color:inherit;text-decoration:none}
+    .section-label,.inline-meta-label{font-weight:700;font-size:13px;display:inline-flex;align-items:center;line-height:inherit;min-height:1em}
+    .section-content.no-wrap{white-space:nowrap;display:inline-block}
+    .section-inline .section-content{display:block;flex:1;min-width:0;line-height:1.7}
+    .section-inline .section-content > p{display:block;margin:0 0 2px}
+    .section-inline .section-content > p:last-child{margin-bottom:0}
+    .section-detail .section-label{display:block;margin-bottom:6px}
+    .section-detail .section-content{display:block}
+    /* 题文前来源：文字中文宋体、数字 Times New Roman，五号；颜色由 inline style 控制（黑/红） */
+    .question-source{font-size:10.5pt;font-family:"Times New Roman","宋体",serif;margin:0 6px;white-space:normal}
+    .formula-latex,.formula-mathml,img{vertical-align:middle}
+    /* 公式行盒统一标准（与官方 v1.0.26 同步）：普通公式沿用正文节奏；所有具有垂直层级的公式
+       按真实高度撑开行盒并保留上下安全区，覆盖来源站残留的固定 line-height/height。 */
+    .question-body math.formula-inline{line-height:normal;max-width:100%;vertical-align:middle}
+    /* 参考菁优详情页解析区的视觉节奏：解答正文约 2 倍行高；高公式行略宽于正文，
+       并给公式自身约 0.28em 的上下呼吸区。只作用于答案尾部，不放松题干/选项。 */
+    .question-answer-tail .section-content{line-height:2!important}
+    .question-body math.formula-stacked{display:inline-block;margin:.28em .05em;vertical-align:middle}
+    .question-body .section-content .formula-line{line-height:2.1!important;height:auto!important;max-height:none!important;overflow:visible!important}
+    .group-title{font-size:14pt;margin:18px 0 10px}
+    .question-head{display:flex;gap:8px;align-items:baseline}
+    .question-index{font-weight:700;white-space:nowrap;margin-bottom:0}
+    .question-body{flex:1;min-width:0}
+    .section-label,.inline-meta-label{font-weight:700;white-space:nowrap}
+    .section-content{flex:1;min-width:0}
+    table{border-collapse:collapse;max-width:100%;width:auto}
+    td,th{border:1px solid #9ca3af;padding:4px 6px;vertical-align:top}
+    table.ques,table.quesborder,table[name="optionsTable"]{border-color:transparent!important}
+    table.ques td,table.ques th,table.quesborder td,table.quesborder th,table[name="optionsTable"] td,table[name="optionsTable"] th,td.selectoption,th.selectoption{border-color:transparent!important}
+    .shell{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:24px 28px;box-shadow:0 10px 30px rgba(15,23,42,.08);min-height:80vh}
+    .paper{background:#fff}
+    h1{font-size:28px;line-height:1.3;margin:0 0 20px}
+    h2{font-size:18px;line-height:1.4;margin:24px 0 10px}
+    p{margin:8px 0;white-space:pre-wrap}
+    ul,ol{margin:8px 0 8px 20px;padding:0}
+    img{max-width:100%;height:auto;vertical-align:middle}
+    table{border-collapse:collapse;max-width:100%;width:auto}
+    /* 语文标记兼容：加点字 <dot> / 波浪线 <wave> */
+    .question-body dot{-webkit-text-emphasis:dot;-webkit-text-emphasis-position:under;text-emphasis:dot;text-emphasis-position:under}
+    .question-body wave{text-decoration:underline wavy;text-decoration-style:wavy;text-underline-offset:2px}
+    /* 组卷小题号等 display:table-cell/nowrap 匿名表格结构会把内容撑出屏幕，还原为行内 */
+    .question-body span[name="subquesnub"]{display:inline !important;white-space:normal !important}
+    .question-body span[style*="display:table-row"],.question-body span[style*="display:table-cell"]{display:inline !important;white-space:normal !important}
+    .question-body{overflow-wrap:break-word}
+    td,th{border:1px solid #d1d5db;padding:4px 6px;vertical-align:top}
+    .quiz-put-blank{display:inline-block;vertical-align:baseline;line-height:1.1;height:1.1em;margin:0 2px;padding:0 2px;border-bottom:2px solid #111111;min-width:3.2em;transform:translateY(-0.03em)}
+    .quiz-put-blank[data-answer-length="2"]{min-width:3.2em}
+    .quiz-put-blank[data-answer-length="3"]{min-width:4.2em}
+    .quiz-put-blank[data-answer-length="4"]{min-width:5.2em}
+    .quiz-put-blank[data-answer-length="5"]{min-width:6.2em}
+    .quiz-put-blank[data-answer-length="6"]{min-width:7.2em}
+    .quiz-put-blank[data-answer-length="7"]{min-width:8.2em}
+    .quiz-put-blank[data-answer-length="8"]{min-width:9.2em}
+    .quiz-put-blank[data-answer-length="9"],.quiz-put-blank[data-answer-length="10"],.quiz-put-blank[data-answer-length="11"],.quiz-put-blank[data-answer-length="12"]{min-width:10.4em}
+    .quiz-put-answer-source{display:none!important}
+    .quiz-put-measure-layer{position:absolute;left:-99999px;top:-99999px;visibility:hidden;white-space:nowrap;pointer-events:none}
+    .meta{font-size:13px;color:#4b5563}
+    .section{margin-top:20px}
+    .section:first-of-type{margin-top:0}
+    /* 带标签的内容块（【答案】【分析】【解答】【点评】【详解】等）：统一 2px 块距 + flex 悬挂缩进；
+       位置须在 .section 规则之后，保证四种块间距完全一致 */
+    .section.section-inline{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin:2px 0;line-height:1.7}
+    .question-card{margin-bottom:26px;padding-bottom:0;border-bottom:none}
+    .question-index{font-weight:700;margin-bottom:10px}
+    .question-answer-tail{margin-top:18px}
+    .question-tail-card .question-answer-tail{margin-top:0}
+    .paper-tail.two-col{columns:2;column-gap:36px}
+    .paper-tail.two-col > h2{column-span:all}
+    .paper-tail.two-col .question-card{break-inside:avoid}
+    .answer-area{margin:14px 0 8px;min-height:5.1em}
+    .paper-tail{margin-top:32px;padding-top:18px;border-top:1px solid #e5e7eb}
+    .error{max-width:100%;margin:40px auto;padding:16px;border:1px solid #fecaca;background:#fff1f2;color:#9f1239;border-radius:10px}
+    .ai-check{display:block;margin-top:10px}
+    .ai-check-content{display:block;flex:1;min-width:0}
+    .ai-check-row{margin:2px 0}
+    .ai-check-label{font-weight:700;font-size:13px}
+    .ai-check-verdict{color:#047857;font-weight:700}
+    .ai-check-verdict.is-error{color:#b91c1c}
+    #feedbackBtn{border:1px solid #d1d5db;background:#fff;color:#6b7280;border-radius:999px;padding:7px 16px;cursor:pointer;font:12px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}
+    #feedbackBtn:hover{color:#111827;border-color:#9ca3af}
+    #feedbackModal{position:fixed;inset:0;z-index:2147483001;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center}
+    #feedbackModal[hidden]{display:none}
+    .fb-card{background:#fff;border-radius:14px;padding:20px;width:360px;box-shadow:0 20px 50px rgba(15,23,42,.3)}
+    .fb-title{font-size:15px;font-weight:700;margin-bottom:12px}
+    .fb-stars{display:flex;gap:6px;margin-bottom:12px}
+    .fb-star{font-size:26px;cursor:pointer;color:#d1d5db;background:none;border:none;padding:0;line-height:1}
+    .fb-star.active{color:#f59e0b}
+    #fbContent{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:8px;padding:10px;font:13px/1.6 inherit;resize:vertical;min-height:80px}
+    .fb-actions{display:flex;gap:10px;margin-top:14px}
+    .fb-actions .primary{background:#111827;border-color:#111827;color:#fff}
+    #fbMsg{font-size:12px;color:#047857;margin-top:10px;min-height:16px}
+    @media (max-width: 1140px) {
+      .page-shell{grid-template-columns:1fr}
+    }
+    @media print{
+      .settings-column{display:none}
+      #feedbackModal{display:none!important}
+      body{background:#fff}
+      .page-shell{display:block;max-width:none;margin:0;padding:0}
+      .shell{border:none;box-shadow:none;border-radius:0;padding:0;min-height:0}
+      .paper-tail{break-before:page;page-break-before:always}
+    }
+  </style>
+</head>
+<body>
+  <div class="page-shell">
+    <div class="preview-column">
+      <div class="shell" id="app"></div>
+    </div>
+    <div class="settings-column">
+      <div class="settings-panel">
+        <div class="settings-header">
+          <strong>导出设置</strong>
+          <div class="meta" id="meta"></div>
+        </div>
+        <div class="control-group">
+          <div class="control-item">
+            <span>答案或解析位置</span>
+            <div class="input-group">
+              <label><input id="previewAnswerPositionPaperEnd" type="radio" name="answerPosition" value="paperEnd">卷尾</label>
+              <label><input id="previewAnswerPositionQuestionEnd" type="radio" name="answerPosition" value="questionEnd">题后</label>
+            </div>
+          </div>
+          <div class="control-item">
+            <span>显示内容</span>
+            <div class="input-group">
+              <label><input id="previewShowParse" type="checkbox">显示解析</label>
+              <label><input id="previewShowKnowledge" type="checkbox">显示考点</label>
+            </div>
+            <div class="input-group">
+              <label><input id="previewShowDifficulty" type="checkbox">显示难度</label>
+            </div>
+            <div class="input-group">
+              <label>题目来源</label>
+            </div>
+            <div class="input-group">
+              <label><input id="previewShowOriginNone" type="radio" name="showOrigin" value="none">不显示</label>
+              <label><input id="previewShowOriginStem" type="radio" name="showOrigin" value="stem">题文前</label>
+              <label><input id="previewShowOriginAnswer" type="radio" name="showOrigin" value="answer">答案处</label>
+            </div>
+            <div class="input-group" id="previewOriginColorGroup">
+              <label><input id="previewOriginColorBlack" type="radio" name="originColor" value="black">黑色</label>
+              <label><input id="previewOriginColorRed" type="radio" name="originColor" value="red">红色</label>
+            </div>
+          </div>
+          <div class="control-item">
+            <span>其他设置</span>
+            <div class="input-group">
+              <label><input id="previewAddAnswerArea" type="checkbox">增加作答区</label>
+            </div>
+            <div class="note">仅对主观题生效（非选择、填空题）</div>
+          </div>
+          <!-- 暂时隐藏：试卷标题默认使用原标题，公式模式默认 mathtype
+          <div class="control-item">
+            <label for="previewPaperTitle">试卷标题</label>
+            <input id="previewPaperTitle" type="text" placeholder="留空使用默认标题">
+          </div>
+          <div class="control-item">
+            <label for="previewFormulaMode">公式模式</label>
+            <select id="previewFormulaMode">
+              <option value="mathtype">MathType（Word 公式）</option>
+              <option value="mathjax">MathJax（HTML 公式）</option>
+            </select>
+          </div>
+          -->
+          <div class="control-item">
+            <span>下载格式</span>
+            <div class="input-group">
+              <label><input id="previewFormatDocx" type="checkbox" value="docx">DOCX</label>
+              <label><input id="previewFormatPdf" type="checkbox" value="pdf">PDF</label>
+            </div>
+          </div>
+        </div>
+        <div class="actions" style="margin-top:18px;display:flex;justify-content:space-between;align-items:center;">
+          <button id="exportBtn" class="primary">下载</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="vendor/qrcode.js"></script>
+  <script type="module" src="preview.js"></script>
+</body>
+</html>

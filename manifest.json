@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "试卷下载工具",
+  "version": "1.2.8",
+  "description": "组卷网、菁优网试题与试卷一键导出为 Word / PDF 文档。",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://*.xkw.com/*",
+    "https://*.jyeoo.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mzujuan.xkw.com/*"
+      ],
+      "js": [
+        "mobile-ua-spoof.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*.xkw.com/*",
+        "https://*.jyeoo.com/*"
+      ],
+      "js": [
+        "model.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "preview.html",
+        "preview.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://*.xkw.com https://*.jyeoo.com"
+  }
+}
