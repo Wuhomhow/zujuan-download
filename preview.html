@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
   <title>导出预览</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <script defer src="vendor/katex/katex.min.js"></script>
@@ -44,13 +45,13 @@
     .section-inline .section-content > p:last-child{margin-bottom:0}
     .section-detail .section-label{display:block;margin-bottom:6px}
     .section-detail .section-content{display:block}
-    /* 题文前来源：文字中文宋体、数字 Times New Roman，五号；颜色由 inline style 控制（黑/红） */
+    /* 题目前来源：文字中文宋体、数字 Times New Roman, 五号；颜色由 inline style 控制（黑/红） */
     .question-source{font-size:10.5pt;font-family:"Times New Roman","宋体",serif;margin:0 6px;white-space:normal}
     .formula-latex,.formula-mathml,img{vertical-align:middle}
     /* 公式行盒统一标准（与官方 v1.0.26 同步）：普通公式沿用正文节奏；所有具有垂直层级的公式
        按真实高度撑开行盒并保留上下安全区，覆盖来源站残留的固定 line-height/height。 */
     .question-body math.formula-inline{line-height:normal;max-width:100%;vertical-align:middle}
-    /* 参考菁优详情页解析区的视觉节奏：解答正文约 2 倍行高；高公式行略宽于正文，
+    /* 参考菁优详情页解析区的视觉节奏：解答正文约 2 倍行高；公式行略宽于正文，
        并给公式自身约 0.28em 的上下呼吸区。只作用于答案尾部，不放松题干/选项。 */
     .question-answer-tail .section-content{line-height:2!important}
     .question-body math.formula-stacked{display:inline-block;margin:.28em .05em;vertical-align:middle}
@@ -72,7 +73,6 @@
     p{margin:8px 0;white-space:pre-wrap}
     ul,ol{margin:8px 0 8px 20px;padding:0}
     img{max-width:100%;height:auto;vertical-align:middle}
-    table{border-collapse:collapse;max-width:100%;width:auto}
     /* 语文标记兼容：加点字 <dot> / 波浪线 <wave> */
     .question-body dot{-webkit-text-emphasis:dot;-webkit-text-emphasis-position:under;text-emphasis:dot;text-emphasis-position:under}
     .question-body wave{text-decoration:underline wavy;text-decoration-style:wavy;text-underline-offset:2px}
@@ -173,7 +173,7 @@
             </div>
             <div class="input-group">
               <label><input id="previewShowOriginNone" type="radio" name="showOrigin" value="none">不显示</label>
-              <label><input id="previewShowOriginStem" type="radio" name="showOrigin" value="stem">题文前</label>
+              <label><input id="previewShowOriginStem" type="radio" name="showOrigin" value="stem">题前</label>
               <label><input id="previewShowOriginAnswer" type="radio" name="showOrigin" value="answer">答案处</label>
             </div>
             <div class="input-group" id="previewOriginColorGroup">
@@ -186,21 +186,8 @@
             <div class="input-group">
               <label><input id="previewAddAnswerArea" type="checkbox">增加作答区</label>
             </div>
-            <div class="note">仅对主观题生效（非选择、填空题）</div>
+            <div class="note">仅自主专题生效（非选择、填空题）</div>
           </div>
-          <!-- 暂时隐藏：试卷标题默认使用原标题，公式模式默认 mathtype
-          <div class="control-item">
-            <label for="previewPaperTitle">试卷标题</label>
-            <input id="previewPaperTitle" type="text" placeholder="留空使用默认标题">
-          </div>
-          <div class="control-item">
-            <label for="previewFormulaMode">公式模式</label>
-            <select id="previewFormulaMode">
-              <option value="mathtype">MathType（Word 公式）</option>
-              <option value="mathjax">MathJax（HTML 公式）</option>
-            </select>
-          </div>
-          -->
           <div class="control-item">
             <span>下载格式</span>
             <div class="input-group">
