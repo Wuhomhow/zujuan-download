@@ -699,22 +699,8 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
         if (ready || Date.now() > deadline) break;
         await new Promise(r => setTimeout(r, 400))
     }
-    /* 尝试自动展开页面上的答案开关（若存在且未勾选） */
-    await exec(() => {
-        try {
-            const label = document.querySelector('label[for="isshowAnswer"], .show-answer, #showAnswer');
-            const box = document.querySelector("#isshowAnswer");
-            if (box && !box.checked) {
-                if (label) label.click();
-                else { box.checked = true; box.dispatchEvent(new Event("change", { bubbles: true })); }
-            }
-        } catch {}
-    });
-    await new Promise(r => setTimeout(r, 600));
-
     const raw = await exec(async () => {
         try {
-            // 将当前网页已授权的答案/解析图片直接内联转换为 Base64，彻底绕过组卷网跨页面 403 防盗链与权限校验
             async function inlineAuthorizedImages(container) {
                 if (!container) return "";
                 const clone = container.cloneNode(true);
@@ -727,7 +713,6 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
                     if (!rawSrc || rawSrc.startsWith("data:")) continue;
                     const absUrl = oImg?.src || new URL(rawSrc, location.href).href;
                     let dataUrl = null;
-                    // 优先利用页面已渲染完成的 Image 对象绘制到 Canvas 提取 Base64（零网络请求）
                     if (oImg && oImg.complete && oImg.naturalWidth > 0) {
                         try {
                             const cvs = document.createElement("canvas");
@@ -737,7 +722,6 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
                             dataUrl = cvs.toDataURL("image/png");
                         } catch {}
                     }
-                    // 若 Canvas 跨域受限或图片尚未完全渲染，使用当前页面 Cookie 与 Referer 原生 fetch 转 Base64
                     if (!dataUrl) {
                         try {
                             const resp = await fetch(absUrl, { credentials: "include" });
@@ -780,8 +764,7 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
             } catch {}
             if (!bankId) bankId = String(document.querySelector(".tk-quest-item.quesroot, .tk-quest-item[bankid]")?.getAttribute("bankid") || "").trim();
             const questions = [];
-            const itemNodes = document.querySelectorAll(".ques-item[questionid], .tk-quest-item[questionid]");
-            for (const item of itemNodes) {
+            for (const item of document.querySelectorAll(".ques-item[questionid], .tk-quest-item[questionid]")) {
                 const id = String(item.getAttribute("questionid") || "");
                 if (!/^\d+$/.test(id) || questions.some(q => q.id === id)) continue;
                 const root = item.querySelector(".tk-quest-item.quesroot") || item;
@@ -794,93 +777,38 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
                     .trim();
                 const m = meta[id] || {};
 
-                let answer = "", parse = "", categoriesInfo = (m.categoryname || "").trim();
-                const opt = root.querySelector(".wrapper.quesdiv .exam-item__opt, .quesdiv .exam-item__opt, .exam-item__opt, .ques-answer, .answer-box, .detail-box, .ques-detail, .wrapper-opt");
-                if (opt) {
-                    const aEl = opt.querySelector(".item.answer, .answer, .daan, [class*='answer'], [class*='daan']");
-                    if (aEl && !/403|没有权限查看/.test(aEl.textContent || "")) {
-                        answer = await inlineAuthorizedImages(aEl);
-                        answer = answer.replace(/^(?:\s*<[^>]+>)*\s*【?答案】?\s*[:：]?\s*/i, "").trim();
-                    }
-                    const pEl = opt.querySelector(".item.analysis, .item.parse, .item.jiexi, [class*='parse'], [class*='analysis'], [class*='jiexi'], [class*='xiangjie']");
-                    if (pEl && !/403|没有权限查看/.test(pEl.textContent || "")) {
-                        parse = await inlineAuthorizedImages(pEl);
-                        parse = parse.replace(/^(?:\s*<[^>]+>)*\s*【?(?:解析|分析|详解)】?\s*[:：]?\s*/i, "").trim();
-                    }
-                    const kEl = opt.querySelector(".item.knowlegde, .item.knowledge, [class*='knowledge']");
-                    if (kEl && !categoriesInfo) categoriesInfo = [...kEl.querySelectorAll("a.knowledge-name, a, span")].map(el => el.textContent?.trim() || "").filter(Boolean).join(",");
-                }
-
-                // 若答案/解析是以无特定类名的行或直接以图片形式挂载在题目下方
-                if (!answer || !parse) {
-                    const rows = root.querySelectorAll("div, p, tr, td, li, dd");
-                    for (const el of rows) {
-                        if (cnt && cnt.contains(el)) continue;
-                        if (el.children.length > 6) continue;
-                        const text = el.textContent?.trim() || "";
-                        if (/403|没有权限查看/.test(text)) continue;
-                        if (!answer && /^(?:【?答案】?|答案\s*[:：]?)\s*/.test(text)) {
-                            const html = await inlineAuthorizedImages(el);
-                            const clean = html.replace(/^(?:\s*<[^>]+>)*\s*【?答案】?\s*[:：]?\s*/i, "").trim();
-                            if (clean) answer = clean;
+                // 备用方案：仅当移动端结构化文本获取失败时，才回退使用 PC 页面上的答案图片
+                let domBackupAnswer = "";
+                const extraImgs = [...root.querySelectorAll("img")].filter(img => !(cnt && cnt.contains(img)));
+                if (extraImgs.length) {
+                    const parts = [];
+                    for (const oImg of extraImgs) {
+                        const absUrl = oImg.src || "";
+                        if (!absUrl) continue;
+                        let dataUrl = null;
+                        if (oImg.complete && oImg.naturalWidth > 0) {
+                            try {
+                                const cvs = document.createElement("canvas");
+                                cvs.width = oImg.naturalWidth;
+                                cvs.height = oImg.naturalHeight;
+                                cvs.getContext("2d").drawImage(oImg, 0, 0);
+                                dataUrl = cvs.toDataURL("image/png");
+                            } catch {}
                         }
-                        if (/^(?:【?(?:分析|详解|解析)】?|(?:分析|详解|解析)\s*[:：]?)\s*/.test(text)) {
-                            const html = await inlineAuthorizedImages(el);
-                            const clean = html.replace(/^(?:\s*<[^>]+>)*\s*【?(?:分析|详解|解析)】?\s*[:：]?\s*/i, "").trim();
-                            if (clean && !parse.includes(clean)) parse = parse ? (parse + "<br>" + clean) : clean;
-                        }
+                        parts.push(`<img src="${dataUrl || absUrl}">`);
                     }
-                }
-
-                // 专门检测题目下方直接渲染的答案解析图片（例如 src 含 quesparse / answer / parse 的 img）
-                if (!answer && !parse) {
-                    const extraImgs = [...root.querySelectorAll("img")].filter(img => !(cnt && cnt.contains(img)));
-                    if (extraImgs.length) {
-                        const holder = document.createElement("div");
-                        extraImgs.forEach(img => holder.appendChild(img.cloneNode(true)));
-                        // 临时用原图列表转换
-                        const htmlParts = [];
-                        for (const oImg of extraImgs) {
-                            const absUrl = oImg.src || "";
-                            if (!absUrl) continue;
-                            let dataUrl = null;
-                            if (oImg.complete && oImg.naturalWidth > 0) {
-                                try {
-                                    const cvs = document.createElement("canvas");
-                                    cvs.width = oImg.naturalWidth;
-                                    cvs.height = oImg.naturalHeight;
-                                    cvs.getContext("2d").drawImage(oImg, 0, 0);
-                                    dataUrl = cvs.toDataURL("image/png");
-                                } catch {}
-                            }
-                            if (!dataUrl) {
-                                try {
-                                    const resp = await fetch(absUrl, { credentials: "include" });
-                                    if (resp.ok) {
-                                        const blob = await resp.blob();
-                                        dataUrl = await new Promise(res => {
-                                            const reader = new FileReader();
-                                            reader.onloadend = () => res(reader.result);
-                                            reader.onerror = () => res(null);
-                                            reader.readAsDataURL(blob);
-                                        });
-                                    }
-                                } catch {}
-                            }
-                            htmlParts.push(`<img src="${dataUrl || absUrl}">`);
-                        }
-                        if (htmlParts.length) answer = htmlParts.join("<br>");
-                    }
+                    if (parts.length) domBackupAnswer = parts.join("<br>");
                 }
 
                 questions.push({
                     quesBody: body || "",
-                    quesAnswer: answer || "",
-                    quesParse: parse || "",
+                    quesAnswer: "",
+                    quesParse: "",
+                    domBackupAnswer,
                     quesAudio: "",
                     quesChildNum: Number(m.childnum) || 0,
                     qbmId: "",
-                    categoriesInfo,
+                    categoriesInfo: (m.categoryname || "").trim(),
                     quesTypeName: (m.qyname || "").trim(),
                     quesDiffName: (m.qdname || "").trim(),
                     from: (m.titleAbbreviation || m.title || "").trim(),
@@ -902,40 +830,46 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
     if (!parsed.questions?.length) throw new Error("EXPORT_EXTRACT_FAILED");
     const subjectId = String(parsed.bankId || "");
     if (!/^\d+$/.test(subjectId)) throw new Error("EXPORT_EXTRACT_FAILED");
-    let list = parsed.questions.map(q => normalizeZujuanPaperRawQuestion({
-        ...q,
-        quesBody: absolutizeMobileHtml(q.quesBody),
-        quesAnswer: absolutizeMobileHtml(q.quesAnswer),
-        quesParse: absolutizeMobileHtml(q.quesParse)
-    }));
 
-    // 若 PC DOM 未展开答案（答案为空），尝试移动端补充，但严格过滤移动端返回的 403 权限错误文案！
-    const isInvalidAns = s => !String(s || "").trim() || /403|没有权限查看组卷网答案解析/.test(String(s || ""));
-    if (list.every(q => isInvalidAns(q.quesAnswer)) && subjectId) {
-        try {
-            const mobileItems = list.map(q => ({
-                id: q.id,
-                url: `https://mzujuan.xkw.com/${subjectId}q${q.id}.html?target=ques_detail&quesId=${q.id}&subjectId=${subjectId}`
-            }));
-            const mobileDetails = await loadMobileQuesBatchViaTab(mobileItems, 15000);
-            if (mobileDetails && mobileDetails.length) {
-                const detailMap = new Map(mobileDetails.map(d => [String(d.id), d]));
-                list = list.map(q => {
-                    const m = detailMap.get(String(q.id));
-                    if (!m) return q;
-                    const mAns = !isInvalidAns(m.quesAnswer) ? absolutizeMobileHtml(m.quesAnswer) : q.quesAnswer;
-                    const mParse = !isInvalidAns(m.quesParse) ? absolutizeMobileHtml(m.quesParse) : q.quesParse;
-                    return normalizeZujuanPaperRawQuestion({
-                        ...q,
-                        quesAnswer: isInvalidAns(mAns) ? "" : mAns,
-                        quesParse: isInvalidAns(mParse) ? "" : mParse,
-                        from: m.from || q.from,
-                        categoriesInfo: m.categoriesInfo || q.categoriesInfo
-                    });
-                });
+    // 核心处理：与单题详情页完全同源，优先从移动站 quesDetail 获取纯文本/公式结构化的【答案】【分析】【详解】
+    let mobileMap = new Map();
+    try {
+        const mobileItems = parsed.questions.map(q => ({
+            id: q.id,
+            url: `https://mzujuan.xkw.com/${subjectId}q${q.id}.html?target=ques_detail&quesId=${q.id}&subjectId=${subjectId}`
+        }));
+        const mobileDetails = await loadMobileQuesBatchViaTab(mobileItems, 2e4);
+        if (Array.isArray(mobileDetails)) {
+            for (const d of mobileDetails) {
+                if (d && d.id) mobileMap.set(String(d.id), d);
             }
-        } catch {}
+        }
+    } catch (e) {
+        console.warn("Mobile structured answer fetch failed:", e);
     }
+
+    const isInvalid403 = s => !String(s || "").trim() || /403|没有权限查看/.test(String(s || ""));
+
+    const list = parsed.questions.map(q => {
+        const m = mobileMap.get(String(q.id));
+        const hasValidMobileAns = m && (!isInvalid403(m.quesAnswer) || !isInvalid403(m.quesParse));
+        const finalBody = (m && m.quesBody && !isInvalid403(m.quesBody)) ? m.quesBody : q.quesBody;
+        const finalAnswer = hasValidMobileAns ? (m.quesAnswer || "") : (q.domBackupAnswer || "");
+        const finalParse = hasValidMobileAns ? (m.quesParse || "") : "";
+        return normalizeZujuanPaperRawQuestion({
+            ...q,
+            quesBody: absolutizeMobileHtml(finalBody),
+            quesAnswer: absolutizeMobileHtml(finalAnswer),
+            quesParse: absolutizeMobileHtml(finalParse),
+            quesAudio: (m && m.quesAudio) || q.quesAudio || "",
+            quesChildNum: Number(m?.quesChildNum || q.quesChildNum) || 0,
+            categoriesInfo: (m && m.categoriesInfo) || q.categoriesInfo || "",
+            quesTypeName: m?.quesType?.name || m?.quesTypeName || q.quesTypeName || "",
+            quesDiffName: m?.quesDiff?.name || m?.quesDiffName || q.quesDiffName || "",
+            from: (m && m.from) || q.from || "",
+            updateTime: (m && m.updateTime) || q.updateTime || ""
+        });
+    });
     const fromText = list[0]?.from || "";
     const basketUrl = /^https:\/\//i.test(String(pageUrl || "")) ? pageUrl : "https://zujuan.xkw.com/zujuan/";
     return withZujuanSingleListening({
@@ -1136,54 +1070,9 @@ async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswe
             await new Promise(r => setTimeout(r, 700))
         }
     }
-    /* 2) DOM 抓取全部题目（并将已授权渲染的答案/解析图片直接内联转换为 Base64） */
-    const raw = await exec(async () => {
+    /* 2) DOM 抓取全部题目 */
+    const raw = await exec(() => {
         try {
-            async function inlineAuthorizedImages(container) {
-                if (!container) return "";
-                const clone = container.cloneNode(true);
-                const origImgs = [...container.querySelectorAll("img")];
-                const cloneImgs = [...clone.querySelectorAll("img")];
-                for (let i = 0; i < cloneImgs.length; i++) {
-                    const cImg = cloneImgs[i];
-                    const oImg = origImgs[i];
-                    const rawSrc = cImg.getAttribute("src") || cImg.getAttribute("data-src") || "";
-                    if (!rawSrc || rawSrc.startsWith("data:")) continue;
-                    const absUrl = oImg?.src || new URL(rawSrc, location.href).href;
-                    let dataUrl = null;
-                    if (oImg && oImg.complete && oImg.naturalWidth > 0) {
-                        try {
-                            const cvs = document.createElement("canvas");
-                            cvs.width = oImg.naturalWidth;
-                            cvs.height = oImg.naturalHeight;
-                            cvs.getContext("2d").drawImage(oImg, 0, 0);
-                            dataUrl = cvs.toDataURL("image/png");
-                        } catch {}
-                    }
-                    if (!dataUrl) {
-                        try {
-                            const resp = await fetch(absUrl, { credentials: "include" });
-                            if (resp.ok) {
-                                const blob = await resp.blob();
-                                dataUrl = await new Promise(res => {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => res(reader.result);
-                                    reader.onerror = () => res(null);
-                                    reader.readAsDataURL(blob);
-                                });
-                            }
-                        } catch {}
-                    }
-                    if (dataUrl && dataUrl.startsWith("data:image")) {
-                        cImg.setAttribute("src", dataUrl);
-                        cImg.removeAttribute("data-src");
-                    } else {
-                        cImg.setAttribute("src", absUrl);
-                    }
-                }
-                return clone.innerHTML.trim();
-            }
-
             const title = document.querySelector(".exam-title .title-txt .txt")?.textContent?.trim()
                 || document.querySelector("main.special-topic-detail .exam-info h1, main.special-topic-detail .exam-info h2, main.special-topic-detail .exam-info h3")?.textContent?.trim()
                 || document.title?.replace(/\s*-\s*组卷网\s*$/i, "").trim() || "";
@@ -1195,47 +1084,22 @@ async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswe
                 if (!/^\d+$/.test(id) || seen.has(id)) continue;
                 seen.add(id);
                 const cnt = item.querySelector(".quesdiv .exam-item__cnt") || item.querySelector(".exam-item__cnt");
-                let body = cnt ? await inlineAuthorizedImages(cnt) : "";
+                let body = cnt?.innerHTML || "";
                 if (!body) {
                     const qd = item.querySelector(".quesdiv");
-                    body = qd ? (await inlineAuthorizedImages(qd)).replace(/<div[^>]*class="[^>]*exam-item__opt[^>]*"[^>]*>[\s\S]*$/i, "") : ""
+                    body = qd ? (qd.innerHTML || "").replace(/<div[^>]*class="[^>]*exam-item__opt[^>]*"[^>]*>[\s\S]*$/i, "") : ""
                 }
                 body = body.replace(/^(\s*<(?:p|span|div)[^>]*>\s*)*\d+[\.、．]\s*/, "").trim();
-                const opt = item.querySelector(".quesdiv .exam-item__opt, .exam-item__opt, .ques-answer, .answer-box, .detail-box, .ques-detail, .wrapper-opt");
+                const opt = item.querySelector(".quesdiv .exam-item__opt");
                 let answer = "", parse = "", categoriesInfo = "";
                 if (opt) {
-                    const aEl = opt.querySelector(".item.answer, .answer, .daan, [class*='answer'], [class*='daan']"),
+                    const aEl = opt.querySelector(".item.answer"),
                         needLogin = !!opt.querySelector(".item.no-login");
-                    if (aEl && !needLogin && !/403|没有权限查看/.test(aEl.textContent || "")) {
-                        answer = await inlineAuthorizedImages(aEl);
-                        answer = answer.replace(/^(?:\s*<[^>]+>)*\s*【?答案】?\s*[:：]?\s*/i, "").trim();
-                    }
-                    const pEl = opt.querySelector(".item.analysis, .item.parse, .item.jiexi, [class*='parse'], [class*='analysis'], [class*='jiexi'], [class*='xiangjie']");
-                    if (pEl && !needLogin && !/403|没有权限查看/.test(pEl.textContent || "")) {
-                        parse = await inlineAuthorizedImages(pEl);
-                        parse = parse.replace(/^(?:\s*<[^>]+>)*\s*【?(?:解析|分析|详解)】?\s*[:：]?\s*/i, "").trim();
-                    }
-                    const kEl = opt.querySelector(".item.knowlegde, .item.knowledge, [class*='knowledge']");
-                    if (kEl) categoriesInfo = [...kEl.querySelectorAll("a.knowledge-name, a, span")].map(el => el.textContent?.trim() || "").filter(Boolean).join(",")
-                }
-                if (!answer || !parse) {
-                    const rows = item.querySelectorAll("div, p, tr, td, li, dd");
-                    for (const el of rows) {
-                        if (cnt && cnt.contains(el)) continue;
-                        if (el.children.length > 6) continue;
-                        const text = el.textContent?.trim() || "";
-                        if (/403|没有权限查看/.test(text)) continue;
-                        if (!answer && /^(?:【?答案】?|答案\s*[:：]?)\s*/.test(text)) {
-                            const html = await inlineAuthorizedImages(el);
-                            const clean = html.replace(/^(?:\s*<[^>]+>)*\s*【?答案】?\s*[:：]?\s*/i, "").trim();
-                            if (clean) answer = clean;
-                        }
-                        if (/^(?:【?(?:分析|详解|解析)】?|(?:分析|详解|解析)\s*[:：]?)\s*/.test(text)) {
-                            const html = await inlineAuthorizedImages(el);
-                            const clean = html.replace(/^(?:\s*<[^>]+>)*\s*【?(?:分析|详解|解析)】?\s*[:：]?\s*/i, "").trim();
-                            if (clean && !parse.includes(clean)) parse = parse ? (parse + "<br>" + clean) : clean;
-                        }
-                    }
+                    if (aEl && !needLogin) answer = aEl.innerHTML || "";
+                    const pEl = opt.querySelector(".item.analysis, .item.parse, .item.jiexi, [class*='parse'], [class*='analysis'], [class*='jiexi']");
+                    if (pEl && !needLogin) parse = pEl.innerHTML || "";
+                    const kEl = opt.querySelector(".item.knowlegde, .item.knowledge");
+                    if (kEl) categoriesInfo = [...kEl.querySelectorAll("a.knowledge-name")].map(el => el.textContent?.trim() || "").filter(Boolean).join(",")
                 }
                 const infoCnt = [...item.querySelectorAll(".ques-additional .left-msg .info-cnt")].map(el => el.textContent?.trim() || ""),
                     srcEl = item.querySelector(".ques-src");
@@ -1270,12 +1134,49 @@ async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswe
             subjectId = new URL(e).pathname.match(/\/(\d+)p/i)?.[1] || ""
         } catch {}
     }
-    const list = parsed.questions.map(q => normalizeZujuanPaperRawQuestion({
-        ...q,
-        quesBody: absolutizeMobileHtml(q.quesBody),
-        quesAnswer: absolutizeMobileHtml(q.quesAnswer),
-        quesParse: absolutizeMobileHtml(q.quesParse)
-    }));
+    // 检测 PC DOM 答案是否为空或仅为整张防复制图片（无纯文本解析），优先通过移动站获取与单题详情页一致的文本模式【答案】【分析】【详解】
+    const isImageOnlyOrEmpty = q => {
+        const ans = String(q.quesAnswer || "").trim();
+        const prs = String(q.quesParse || "").trim();
+        if (!ans && !prs) return true;
+        if (/403|没有权限查看/.test(ans) || /403|没有权限查看/.test(prs)) return true;
+        // 如果 PC 端只有答案图片而没有文本解析，也升级为移动站结构化文本
+        const textOnly = (ans + prs).replace(/<img[^>]*>/gi, "").replace(/<[^>]+>/g, "").trim();
+        return !textOnly;
+    };
+
+    let mobileMap = new Map();
+    if (subjectId && parsed.questions.some(isImageOnlyOrEmpty)) {
+        try {
+            const mobileItems = parsed.questions.map(q => ({
+                id: q.id,
+                url: `https://mzujuan.xkw.com/${subjectId}q${q.id}.html?target=ques_detail&quesId=${q.id}&subjectId=${subjectId}`
+            }));
+            const mobileDetails = await loadMobileQuesBatchViaTab(mobileItems, 2e4);
+            if (Array.isArray(mobileDetails)) {
+                for (const d of mobileDetails) {
+                    if (d && d.id) mobileMap.set(String(d.id), d);
+                }
+            }
+        } catch {}
+    }
+
+    const isInvalid403 = s => !String(s || "").trim() || /403|没有权限查看/.test(String(s || ""));
+
+    const list = parsed.questions.map(q => {
+        const m = mobileMap.get(String(q.id));
+        const hasValidMobileAns = m && (!isInvalid403(m.quesAnswer) || !isInvalid403(m.quesParse));
+        return normalizeZujuanPaperRawQuestion({
+            ...q,
+            quesBody: absolutizeMobileHtml((m && m.quesBody && !isInvalid403(m.quesBody)) ? m.quesBody : q.quesBody),
+            quesAnswer: absolutizeMobileHtml(hasValidMobileAns ? (m.quesAnswer || "") : q.quesAnswer),
+            quesParse: absolutizeMobileHtml(hasValidMobileAns ? (m.quesParse || "") : q.quesParse),
+            categoriesInfo: (m && m.categoriesInfo) || q.categoriesInfo || "",
+            quesTypeName: m?.quesType?.name || m?.quesTypeName || q.quesTypeName || "",
+            quesDiffName: m?.quesDiff?.name || m?.quesDiffName || q.quesDiffName || "",
+            from: (m && m.from) || q.from || ""
+        });
+    });
     // 专题题目列表的 PC DOM 常常只有题干；空答案时继续走移动站题目详情补取。
     if (requireAnswers && list.every(q => !String(q.quesAnswer || "").trim())) return null;
     const fromText = list[0]?.from || "";
@@ -1396,21 +1297,16 @@ async function startExportInner(e) {
         // 绝不能静默回退到无答案的 PC DOM 文档。
         if ("zujuan" === e.sourceSite && a?.url) {
             s = await getCachedZujuanDoc(e);
-            // 校验缓存有效性：若缓存无答案，或缓存中带有 "(403) 您没有权限查看" 错误文本，立即废弃该缓存并重新从页面抓取
-            const hasValidCachedAnswers = s && Array.isArray(s.groups) && s.groups.some(g =>
+            // 校验缓存：若缓存无答案、含 403 报错、或者答案仅是整张截图（无【分析】/【详解】结构化文本段落），自动刷新缓存以升级为文本模式！
+            const hasStructuredTextAnswers = s && Array.isArray(s.groups) && s.groups.some(g =>
                 Array.isArray(g.questions) && g.questions.some(q => {
-                    if (Array.isArray(q.htmlSections)) {
-                        return q.htmlSections.some(sec =>
-                            sec.type === "answer" &&
-                            sec.html &&
-                            String(sec.html).trim() &&
-                            !/403|没有权限查看/.test(String(sec.html))
-                        );
-                    }
-                    return q.answer && String(q.answer).trim() && !/403|没有权限查看/.test(String(q.answer));
+                    if (!Array.isArray(q.htmlSections)) return false;
+                    const hasAns = q.htmlSections.some(sec => sec.type === "answer" && sec.html && !/403|没有权限查看/.test(sec.html));
+                    const hasTextParse = q.htmlSections.some(sec => (sec.type === "analysis" || sec.type === "solution" || sec.type === "parse") && sec.html && !/403|没有权限查看/.test(sec.html));
+                    return hasAns && hasTextParse;
                 })
             );
-            if (s && !hasValidCachedAnswers) {
+            if (s && !hasStructuredTextAnswers) {
                 s = null;
             }
             setExportPatch({ zujuanCacheHit: Boolean(s) }), await persist();
