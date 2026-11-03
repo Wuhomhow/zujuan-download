@@ -553,8 +553,11 @@ function parseUserPaperQuesIds(e) {
     return t
 }
 
-/* 批量取移动站试题详情：复用单个后台标签页顺序导航（WAF cookie 会话内复用，逐题轮询 __NUXT__）。
- * 导航间隙可能读到上一题的 __NUXT__，必须校验 quesDetail.id 与目标 id 一致才接受。 */
+/* 批量取移动站试题详情（抗 WAF 增强版）：
+ * 1) 打开第一个移动站试题页通过 WAF 校验后，优先在页面 MAIN world 内直接调用移动站原生批量接口
+ *    POST /server_api/ques/ids/{bankId}?ids=... 一次性拉取全卷所有题目的结构化文本（答案/分析/详解），
+ *    仅需 1 次请求，彻底规避逐题连续跳转触发的移动站 WAF 封禁！
+ * 2) 若批量接口未返回或个别题缺失，再对缺失题目走单题顺序导航兜底，且单题异常绝不中断整卷。 */
 async function loadMobileQuesBatchViaTab(e, t = 2e4) {
     if (!e.length) return [];
     const a = await chrome.tabs.create({
@@ -562,44 +565,122 @@ async function loadMobileQuesBatchViaTab(e, t = 2e4) {
         active: !1
     });
     try {
+        let bankId = "";
+        try {
+            const u = new URL(e[0].url);
+            bankId = u.searchParams.get("subjectId") || u.pathname.match(/\/(\d+)q\d+/i)?.[1] || "";
+        } catch {}
+        const allIds = e.map(item => String(item.id)).filter(Boolean);
+
+        // 第一步：等待首题页面就绪（完成 WAF 握手），并尝试一次性调用 /server_api/ques/ids/{bankId} 批量接口
+        const firstDeadline = Date.now() + t;
+        let firstQues = null;
+        let batchMap = new Map();
+        for (;;) {
+            const o = await chrome.scripting.executeScript({
+                target: { tabId: a.id },
+                world: "MAIN",
+                func: async (expectedId, bId, idList) => {
+                    try {
+                        if (/登录/.test(document.title || "") || document.querySelector('input[type="password"]')) return { status: "login" };
+                        const detail = window.__NUXT__?.data?.[0]?.quesDetail;
+                        if (!detail || String(detail.id || "") !== String(expectedId)) return null;
+                        // 页面已通过 WAF，立即复用当前会话批量拉取全卷题目结构化文本数据
+                        let batchData = null;
+                        if (bId && Array.isArray(idList) && idList.length > 0) {
+                            try {
+                                const resp = await fetch(`/server_api/ques/ids/${bId}?ids=${idList.join(",")}`, {
+                                    method: "POST",
+                                    credentials: "include"
+                                });
+                                if (resp.ok) {
+                                    const json = await resp.json();
+                                    if (Array.isArray(json?.data) && json.data.length) {
+                                        batchData = json.data;
+                                    }
+                                }
+                            } catch {}
+                        }
+                        return {
+                            status: "ok",
+                            first: detail,
+                            batch: batchData
+                        };
+                    } catch {
+                        return null;
+                    }
+                },
+                args: [e[0].id, bankId, allIds]
+            }).catch(() => null);
+
+            const res = o?.[0]?.result;
+            if (res?.status === "login") throw new Error("请先登录组卷网后再使用导出功能");
+            if (res?.status === "ok" && res.first) {
+                firstQues = res.first;
+                if (Array.isArray(res.batch)) {
+                    for (const item of res.batch) {
+                        if (item && item.id) batchMap.set(String(item.id), item);
+                    }
+                }
+                break;
+            }
+            if (Date.now() > firstDeadline) break;
+            await new Promise(r => setTimeout(r, 300));
+        }
+
+        if (firstQues && !batchMap.has(String(e[0].id))) {
+            batchMap.set(String(e[0].id), firstQues);
+        }
+
+        // 第二步：检查是否所有题目都已由批量接口拿到有效文本答案；若仍有缺失，仅对缺失题目逐个导航补抓（带容错与防封延时）
         const s = [];
         for (let r = 0; r < e.length; r++) {
-            r > 0 && await chrome.tabs.update(a.id, {
-                url: e[r].url
-            });
-            const i = Date.now() + t;
-            let n = null;
-            for (;;) {
-                const o = await chrome.scripting.executeScript({
-                    target: {
-                        tabId: a.id
-                    },
-                    world: "MAIN",
-                    func: e2 => {
-                        try {
-                            const t2 = window.__NUXT__?.data?.[0]?.quesDetail;
-                            return t2 && String(t2.id || "") === String(e2) ? JSON.stringify(t2) : /登录/.test(document.title || "") || document.querySelector('input[type="password"]') ? "login" : null
-                        } catch {
-                            return null
-                        }
-                    },
-                    args: [e[r].id]
-                }).catch(() => null),
-                    c = o?.[0]?.result;
-                if ("login" === c) throw new Error("请先登录组卷网后再使用导出功能");
-                if ("string" == typeof c && c.length > 2) {
-                    n = JSON.parse(c);
-                    break
-                }
-                if (Date.now() > i) throw new Error("EXPORT_EXTRACT_FAILED");
-                await new Promise(e2 => setTimeout(e2, 300))
+            const targetId = String(e[r].id);
+            const cached = batchMap.get(targetId);
+            if (cached && (cached.quesAnswer || cached.quesParse)) {
+                s.push(cached);
+                continue;
             }
-            s.push(n)
+            if (r === 0 && firstQues) {
+                s.push(firstQues);
+                continue;
+            }
+            try {
+                await new Promise(res => setTimeout(res, 350));
+                await chrome.tabs.update(a.id, { url: e[r].url });
+                const i = Date.now() + 12000;
+                let n = null;
+                for (;;) {
+                    const o = await chrome.scripting.executeScript({
+                        target: { tabId: a.id },
+                        world: "MAIN",
+                        func: e2 => {
+                            try {
+                                const t2 = window.__NUXT__?.data?.[0]?.quesDetail;
+                                return t2 && String(t2.id || "") === String(e2) ? JSON.stringify(t2) : null;
+                            } catch {
+                                return null;
+                            }
+                        },
+                        args: [targetId]
+                    }).catch(() => null);
+                    const c = o?.[0]?.result;
+                    if ("string" == typeof c && c.length > 2) {
+                        n = JSON.parse(c);
+                        break;
+                    }
+                    if (Date.now() > i) break;
+                    await new Promise(e2 => setTimeout(e2, 300));
+                }
+                s.push(n || cached || null);
+            } catch {
+                s.push(cached || null);
+            }
         }
-        return s
+        return s.filter(Boolean);
     } finally {
         try {
-            await chrome.tabs.remove(a.id)
+            await chrome.tabs.remove(a.id);
         } catch {}
     }
 }
@@ -685,7 +766,7 @@ async function resolveZujuanThematicPaperDoc(e, t, sourceLabel = "mobile_fetch_t
 /* 组卷中心画布 PC DOM 直抓（与 paper/thematiclist 同策略）：题面/选项取自 .ques-item[questionid] 画布，
  * 题型/难度/知识点/来源取自 ZujuanCom.Paper.Xml() 的 <ques> 属性；不依赖移动站，规避 mzujuan WAF 批量拒绝。
  * PC 画布无答案/解析数据源，answer/parse 置空（与专题页无答案先例一致）。画布展示序即卷面顺序。 */
-async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
+async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "", basketInfo = null) {
     if (!tabId) throw new Error("EXPORT_EXTRACT_FAILED");
     const exec = f => chrome.scripting.executeScript({
         target: { tabId, frameIds: [0] },
@@ -762,7 +843,14 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
                     if (attrs.id && /^\d+$/.test(attrs.id)) meta[attrs.id] = attrs
                 }
             } catch {}
-            if (!bankId) bankId = String(document.querySelector(".tk-quest-item.quesroot, .tk-quest-item[bankid]")?.getAttribute("bankid") || "").trim();
+            // 多重兜底获取 bankId（防止 XML 未包含 bankid 时回退失败）
+            if (!bankId) bankId = String(document.querySelector("[bankid]")?.getAttribute("bankid") || "").trim();
+            if (!bankId) {
+                try {
+                    const cookies = Object.fromEntries(String(document.cookie || "").split(";").map(v => v.trim().split(/=(.*)/s).slice(0, 2)));
+                    bankId = String(cookies.bankId || window.tkBusiness?.tools?.getcookiebankid?.() || "").trim();
+                } catch {}
+            }
             const questions = [];
             for (const item of document.querySelectorAll(".ques-item[questionid], .tk-quest-item[questionid]")) {
                 const id = String(item.getAttribute("questionid") || "");
@@ -828,10 +916,10 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "") {
     if (!raw) throw new Error("EXPORT_EXTRACT_FAILED");
     const parsed = JSON.parse(raw);
     if (!parsed.questions?.length) throw new Error("EXPORT_EXTRACT_FAILED");
-    const subjectId = String(parsed.bankId || "");
+    const subjectId = String(parsed.bankId || basketInfo?.bankId || "2");
     if (!/^\d+$/.test(subjectId)) throw new Error("EXPORT_EXTRACT_FAILED");
 
-    // 核心处理：与单题详情页完全同源，优先从移动站 quesDetail 获取纯文本/公式结构化的【答案】【分析】【详解】
+    // 核心处理：与单题详情页完全同源，优先从移动站获取纯文本/公式结构化的【答案】【分析】【详解】
     let mobileMap = new Map();
     try {
         const mobileItems = parsed.questions.map(q => ({
@@ -897,7 +985,7 @@ async function resolveZujuanQuestionBasketDoc(e, t, a = null, s = !1) {
     /* 组卷中心画布 PC DOM 直抓优先（规避移动站 WAF）；intelligentPaper（s=true）画布结构未实测，保持原移动站取数 */
     if (!s) {
         try {
-            const d = await resolveZujuanQuestionBasketDocFromDOM(t, e);
+            const d = await resolveZujuanQuestionBasketDocFromDOM(t, e, a);
             return await setDebug("export:basket_pc_dom:success", null), d
         } catch (err) {
             await setDebug("export:basket_pc_dom:error", String(err?.message || err || "unknown"))
@@ -1134,13 +1222,11 @@ async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswe
             subjectId = new URL(e).pathname.match(/\/(\d+)p/i)?.[1] || ""
         } catch {}
     }
-    // 检测 PC DOM 答案是否为空或仅为整张防复制图片（无纯文本解析），优先通过移动站获取与单题详情页一致的文本模式【答案】【分析】【详解】
     const isImageOnlyOrEmpty = q => {
         const ans = String(q.quesAnswer || "").trim();
         const prs = String(q.quesParse || "").trim();
         if (!ans && !prs) return true;
         if (/403|没有权限查看/.test(ans) || /403|没有权限查看/.test(prs)) return true;
-        // 如果 PC 端只有答案图片而没有文本解析，也升级为移动站结构化文本
         const textOnly = (ans + prs).replace(/<img[^>]*>/gi, "").replace(/<[^>]+>/g, "").trim();
         return !textOnly;
     };
@@ -1295,18 +1381,17 @@ async function startExportInner(e) {
         // 组卷：答案/解析只能来自移动站 __NUXT__（PC 页 DOM 不含答案）。
         // 整卷优先命中 30 天本地缓存；未命中才访问移动站。抓取失败必须显式报错，
         // 绝不能静默回退到无答案的 PC DOM 文档。
+        const isStructuredTextDoc = doc => doc && Array.isArray(doc.groups) && doc.groups.some(g =>
+            Array.isArray(g.questions) && g.questions.some(q => {
+                if (!Array.isArray(q.htmlSections)) return false;
+                const hasAns = q.htmlSections.some(sec => sec.type === "answer" && sec.html && !/403|没有权限查看/.test(sec.html));
+                const hasTextParse = q.htmlSections.some(sec => (sec.type === "analysis" || sec.type === "solution" || sec.type === "parse") && sec.html && !/403|没有权限查看/.test(sec.html));
+                return hasAns && hasTextParse;
+            })
+        );
         if ("zujuan" === e.sourceSite && a?.url) {
             s = await getCachedZujuanDoc(e);
-            // 校验缓存：若缓存无答案、含 403 报错、或者答案仅是整张截图（无【分析】/【详解】结构化文本段落），自动刷新缓存以升级为文本模式！
-            const hasStructuredTextAnswers = s && Array.isArray(s.groups) && s.groups.some(g =>
-                Array.isArray(g.questions) && g.questions.some(q => {
-                    if (!Array.isArray(q.htmlSections)) return false;
-                    const hasAns = q.htmlSections.some(sec => sec.type === "answer" && sec.html && !/403|没有权限查看/.test(sec.html));
-                    const hasTextParse = q.htmlSections.some(sec => (sec.type === "analysis" || sec.type === "solution" || sec.type === "parse") && sec.html && !/403|没有权限查看/.test(sec.html));
-                    return hasAns && hasTextParse;
-                })
-            );
-            if (s && !hasStructuredTextAnswers) {
+            if (s && !isStructuredTextDoc(s)) {
                 s = null;
             }
             setExportPatch({ zujuanCacheHit: Boolean(s) }), await persist();
@@ -1380,7 +1465,7 @@ async function startExportInner(e) {
         const u = chrome.runtime.getURL(`preview.html?id=${encodeURIComponent(c)}`);
         const previewTab = await chrome.tabs.create({ url: u, active: !0 });
         if (!previewTab?.id) throw new Error("EXPORT_PREVIEW_OPEN_FAILED");
-        s && await cacheZujuanDoc(e, s);
+        s && isStructuredTextDoc(s) && await cacheZujuanDoc(e, s);
         return setExportPatch({
             status: "success",
             lastResult: "success",
