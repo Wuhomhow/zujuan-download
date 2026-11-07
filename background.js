@@ -793,6 +793,11 @@ async function resolveZujuanQuestionBasketDocFromDOM(tabId, pageUrl = "", basket
                     const rawSrc = cImg.getAttribute("src") || cImg.getAttribute("data-src") || "";
                     if (!rawSrc || rawSrc.startsWith("data:")) continue;
                     const absUrl = oImg?.src || new URL(rawSrc, location.href).href;
+                    if (/\/formula\//i.test(absUrl) || /\.svg(\?|$)/i.test(absUrl) || cImg.hasAttribute("latex") || cImg.hasAttribute("mathml") || cImg.hasAttribute("data-latex") || cImg.hasAttribute("data-mathml")) {
+                        cImg.setAttribute("src", absUrl.replace(/(\/quesimg\/Upload\/formula\/[a-f0-9]+)\.png(\?.*)?$/i, "$1.svg$2"));
+                        cImg.removeAttribute("data-src");
+                        continue;
+                    }
                     let dataUrl = null;
                     if (oImg && oImg.complete && oImg.naturalWidth > 0) {
                         try {
