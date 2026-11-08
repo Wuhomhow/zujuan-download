@@ -9,7 +9,7 @@ export const MSG = {
 };
 export const DEFAULT_STATE = {
     settings: {
-        answerPosition: "paperEnd",
+        answerPosition: "questionEnd",
         showParse: !0,
         showKnowledge: !1,
         showDifficulty: !1,

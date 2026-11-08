@@ -234,7 +234,8 @@ function buildZujuanPaperQuestion(e) {
         quesParse: absolutizeMobileHtml(e.quesParse || "")
     });
     return {
-        groupTitle: t.type || "未分类",
+        groupTitle: e.domGroupTitle || e.groupTitle || t.type || "未分类",
+        leadHeadings: Array.isArray(e.leadHeadings) ? e.leadHeadings.filter(Boolean) : [],
         quesTypeName: t.type,
         from: t.source,
         examSource: parseSourceText(t.source),
@@ -255,10 +256,47 @@ function normalizeZujuanPaperRawQuestion(e = {}) {
         categoriesInfo: e.categoriesInfo || "",
         quesTypeName: e.quesType?.name || e.quesTypeName || "",
         quesDiffName: e.quesDiff?.name || e.quesDiffName || "",
+        domGroupTitle: e.domGroupTitle || e.headTitle || e.subTitle || e.secTitle || e.partTitle || "",
+        groupTitle: e.groupTitle || "",
+        leadHeadings: Array.isArray(e.leadHeadings) ? e.leadHeadings.filter(Boolean) : [],
         from: e.from || "",
         id: e.id || "",
         updateTime: e.updateTime || ""
     }
+}
+
+function extractPaperXmlHeadingsMap(xmlStr) {
+    const map = new Map();
+    if (!xmlStr) return map;
+    const pending = [];
+    let activeTitle = "";
+    const tagRe = /<(part|quesType|questype|headTitle|headtitle|subTitle|subtitle|section|ques)\b([^>]*)\/?>/gi;
+    for (const m of String(xmlStr).matchAll(tagRe)) {
+        const tag = (m[1] || "").toLowerCase();
+        const attrStr = m[2] || "";
+        const attrs = {};
+        for (const am of attrStr.matchAll(/([a-zA-Z0-9_]+)\s*=\s*"([^"]*)"/g)) {
+            attrs[am[1].toLowerCase()] = am[2];
+        }
+        if (tag === "ques") {
+            const qid = String(attrs.id || "").trim();
+            if (!/^\d+$/.test(qid) || map.has(qid)) continue;
+            if (pending.length > 0) {
+                activeTitle = pending[pending.length - 1];
+                const leads = pending.slice(0, -1);
+                pending.length = 0;
+                map.set(qid, { domGroupTitle: activeTitle, leadHeadings: leads });
+            } else if (activeTitle) {
+                map.set(qid, { domGroupTitle: activeTitle, leadHeadings: [] });
+            }
+        } else {
+            const rawTxt = (attrs.text || attrs.title || attrs.name || attrs.headtitle || attrs.qyname || "").trim();
+            if (rawTxt && pending[pending.length - 1] !== rawTxt && activeTitle !== rawTxt) {
+                pending.push(rawTxt);
+            }
+        }
+    }
+    return map;
 }
 
 function isZujuanAudioUrl(e) {
@@ -310,13 +348,20 @@ function withZujuanSingleListening(e, t) {
 function groupZujuanQuestions(e) {
     const t = [];
     for (const a of e) {
-        const e = buildZujuanPaperQuestion(a),
-            s = e.groupTitle || "未分类",
+        const q = buildZujuanPaperQuestion(a),
+            s = q.groupTitle || "未分类",
+            leads = Array.isArray(q.leadHeadings) && q.leadHeadings.length ? q.leadHeadings : null,
             r = t[t.length - 1];
-        r && r.title === s ? r.questions.push(e) : t.push({
-            title: s,
-            questions: [e]
-        })
+        if (r && r.title === s && !leads) {
+            r.questions.push(q);
+        } else {
+            const grp = {
+                title: s,
+                questions: [q]
+            };
+            if (leads) grp.leadHeadings = leads;
+            t.push(grp);
+        }
     }
     return t
 }
@@ -471,31 +516,287 @@ async function readUserPaperInfoFromTab(e) {
  * 因此先从用户正在浏览的 PC 页提取题目 id/bankId，再逐题读取移动站详情。 */
 async function readThematicPaperInfoFromTab(e) {
     if (!e) throw new Error("EXPORT_EXTRACT_FAILED");
-    const t = await chrome.scripting.executeScript({
-        target: { tabId: e },
+    const runExtract = async (allFrames) => chrome.scripting.executeScript({
+        target: allFrames ? { tabId: e, allFrames: !0 } : { tabId: e },
         world: "MAIN",
         func: () => {
             try {
-                const items = [...document.querySelectorAll(".qml_paper.ques-list .tk-quest-item[questionid], .tk-quest-item[questionid], [questionid][bankid]")],
-                    seen = new Set,
-                    questions = [];
-                for (const item of items) {
-                    const id = String(item.getAttribute("questionid") || ""),
-                        bankId = String(item.getAttribute("bankid") || "");
-                    if (!/^\d+$/.test(id) || seen.has(id)) continue;
-                    seen.add(id), questions.push({ id, bankId })
+
+                const extractPaperDomHeadings = (doc, items, fallbackTitle = "") => {
+                    const titleSels = [
+                        ".exam-title .title-txt .txt",
+                        "main.special-topic-detail .exam-info h1",
+                        "main.special-topic-detail .exam-info h2",
+                        "main.special-topic-detail .exam-info h3",
+                        "#pui_maintitle",
+                        ".qml-title",
+                        ".paper-title",
+                        ".exam-title h1",
+                        ".exam-title h2",
+                        "h2.exam-title",
+                        ".exam-title"
+                    ];
+                    let mainTitleEl = null, title = "";
+                    for (const sel of titleSels) {
+                        for (const el of doc.querySelectorAll(sel)) {
+                            if (el.querySelector(".tk-quest-item, .ques-item, [questionid]")) continue;
+                            const t = (el.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim().split(/\r?\n/).map(s => s.trim()).find(Boolean) || "";
+                            if (t) { mainTitleEl = el; title = t; break; }
+                        }
+                        if (title) break;
+                    }
+                    if (!title) {
+                        title = (doc.title || "").replace(/\s*[-_–—]\s*组卷网.*$/i, "").trim() || fallbackTitle;
+                    }
+                    const normMain = title.replace(/\s+/g, "");
+                    const item0 = items[0];
+                    if (!mainTitleEl && normMain && item0 && doc.body) {
+                        const candidates = [...doc.body.querySelectorAll("*")].filter(el =>
+                            !el.contains(item0) && (el.compareDocumentPosition(item0) & 4) &&
+                            !el.querySelector(".tk-quest-item, .ques-item, [questionid]") &&
+                            (el.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF\s]+/g, "") === normMain
+                        );
+                        if (candidates.length) mainTitleEl = candidates[candidates.length - 1];
+                    }
+
+                    const badgeRe = /^(?:知识点|题型|考点|易错点|重难点|重点|难点|方法|技巧|专题|模块|微专题|核心素养|素养|拓展|变式|例题|练习|真题|押题|原创)$/;
+                    const bareLabelRe = /^(?:知识点|题型|考点|易错点|重难点|重点|难点|方法|技巧|专题|模块|微专题|核心素养|素养|拓展|变式|例题|练习|真题|押题|原创)\s*[一二三四五六七八九十百零\d]*$/i;
+                    const uiRe = /^(?:添加题型下试题|删除|上移|下移|换一换|全部加入试题篮|加入试题篮|移出试题篮|显示答案|隐藏答案|显示答案与解析|展开|收起|报错|纠错|收藏|下载|打印|编辑|分值|设定分值|批量设置分值|清空试题篮|恢复|还原|预览|保存|分享|导出|更多|全部|收起全部|展开全部|查看解析|隐藏解析|试题分析|试卷分析|命题意图|共\s*\d+\s*道?\s*题)$/;
+                    const metaSubRe = /(?:显示答案|隐藏答案|试卷分析|命题意图|下载试卷|收藏试卷|浏览(?:量|次数)?\s*[:：]?\s*\d+|更新时间\s*[:：]|总分\s*[:：]?\s*\d+|考试时间\s*[:：]?\s*\d+|共\s*\d+\s*道?\s*题|全部加入试题篮|加入试题篮|添加题型下试题)/i;
+                    const excludeAncSel = ".exam-title, .exam-info, #pui_maintitle, .pui_seal, .paper-info, .paper-meta, .paper-head, .paper-toolbar, .filter-box, .screen-box, .tool-bar, .toolbar, .operate-bar, .ctrl-box, .ques-additional, .ques-src, .exam-item__opt, .page-box, .pagination, .pagenum, .no-login, .layui-layer, .modal, .dialog, .bread-crumb, .breadcrumb, .bread-nav, .crumbs, .sidebar, .other-info, .fixed-nav, .que-detail-pos, .sec-explain, .catalog, .tree-box, .footer, [hidden], nav, header, footer, aside";
+
+                    const isExcludedAnc = el => {
+                        let cur = el;
+                        while (cur && cur.nodeType === 1) {
+                            if (cur === mainTitleEl || cur.hidden || (cur.hasAttribute && cur.hasAttribute("hidden"))) return true;
+                            if (cur.matches && cur.matches(".tk-quest-item, .ques-item, [questionid]")) return true;
+                            if (cur.matches && cur.matches(excludeAncSel) && !cur.querySelector(".tk-quest-item, .ques-item, [questionid]")) {
+                                return true;
+                            }
+                            cur = cur.parentElement;
+                        }
+                        return false;
+                    };
+
+                    const cleanHeading = (node, forceHeadEl = false) => {
+                        if (!node || node.nodeType !== 1 || node.hidden || (node.hasAttribute && node.hasAttribute("hidden"))) return "";
+                        if (isExcludedAnc(node)) return "";
+                        const clone = node.cloneNode(true);
+                        clone.querySelectorAll("script, style, noscript, button, input, select, textarea, svg, b.tag, .tag, [class*='tag'], .btn, .op-btn, .score-box, .pui_score, .ques-additional, .ques-src, .exam-item__opt, .sec-explain, .que-detail-pos, [hidden]").forEach(n => n.remove());
+                        clone.querySelectorAll("img").forEach(img => {
+                            const alt = img.getAttribute("alt") || img.getAttribute("latex") || "";
+                            img.replaceWith(doc.createTextNode(alt));
+                        });
+                        for (const leaf of [...clone.querySelectorAll("*")]) {
+                            if (leaf.children.length > 0) continue;
+                            const lt = (leaf.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim();
+                            if (uiRe.test(lt)) leaf.remove();
+                        }
+                        const remLeaves = [...clone.querySelectorAll("*")].filter(el => el.children.length === 0 && (el.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim());
+                        if (remLeaves.length >= 1) {
+                            const lastLeaf = remLeaves[remLeaves.length - 1];
+                            const lastTxt = (lastLeaf.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim();
+                            if (badgeRe.test(lastTxt)) {
+                                const fullNow = (clone.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim();
+                                if (fullNow.endsWith(lastTxt)) {
+                                    const beforeTxt = fullNow.slice(0, fullNow.length - lastTxt.length).trim();
+                                    if (beforeTxt.length >= 2) lastLeaf.remove();
+                                }
+                            }
+                            if (remLeaves.length >= 2) {
+                                const firstLeaf = remLeaves[0];
+                                const firstTxt = (firstLeaf.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim();
+                                if (bareLabelRe.test(firstTxt)) {
+                                    firstLeaf.textContent = firstTxt + " ";
+                                }
+                            }
+                        }
+                        let txt = (clone.textContent || "")
+                            .replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "")
+                            .replace(/[\r\n\t\u00A0]+/g, " ")
+                            .replace(/\s{2,}/g, " ")
+                            .replace(/添加题型下试题|全部加入试题篮|加入试题篮|换一换/g, "")
+                            .trim();
+                        txt = txt.replace(/^((?:知识点|题型|考点|专题|模块|易错点|重难点|方法|技巧|核心素养|微专题|变式|拓展)\s*[一二三四五六七八九十百零\d]*)(?=[\u4e00-\u9fa5A-Za-z（(【])/, "$1 ");
+                        txt = txt.replace(/^([\s\S]{2,}?)(?:\s+|(?<=[）)】]))(?:知识点|题型|考点|专题|模块|易错点|重难点|方法|技巧|核心素养|微专题|变式|拓展)\s*$/, "$1").trim();
+                        if (!txt || txt.length > 120 || badgeRe.test(txt)) return "";
+                        if (normMain && txt.replace(/\s+/g, "") === normMain) return "";
+                        if (metaSubRe.test(txt)) return "";
+                        if (/^(?:第\s*\d+\s*页|上一页|下一页|展开|收起|全部|综合排序|最新|最热|\d+)$/i.test(txt)) return "";
+                        const isHeadEl = forceHeadEl || node.matches("h1, h2, h3, h4, h5, h6, [data-nav='title-box'], .sec-title, .qml-title, .part-title, .type-title, .sub-title, .know-title, .point-title, .group-title, .topic-title, .pui_quetype, .pui_part, .ques-type, [class*='sec-title'], [class*='type-title'], [class*='part-title'], [class*='sub-title'], [class*='know-title'], [class*='point-title'], [class*='group-title'], [class*='topic-title'], [class*='know'], [class*='title'], [class*='head']");
+                        const isHeadTxt = /^(?:知识点|题型|考点|易错点|重难点|重点|难点|方法|技巧|专题|模块|微专题|核心素养|变式|拓展|基础|能力|培优|综合|课前|课堂|课后|巩固|提升|突破|训练|练习|达标|闯关|探究|直击|高频|真题|第[一二三四五六七八九十百零\d]+[部分卷章节课讲课时单元]|[一二三四五六七八九十百零]+\s*[、.．]|[（(][一二三四五六七八九十百零\d]+[)）]|\d+\s*[.、．]\s*[^\d]|【.+】)/.test(txt);
+                        return (isHeadEl || isHeadTxt) ? txt : "";
+                    };
+
+                    const searchRoot = doc.querySelector("main.good-lesson-detail .exam-cnt, main.good-lesson-detail, main.special-topic-detail .exam-info, main.special-topic-detail, #paperDetailPage, #pui_body, .exam-cnt, .paper-cnt, main") || doc.body;
+                    const allCandidates = [...(searchRoot || doc.body).querySelectorAll("*")].filter(el =>
+                        el.nodeType === 1 &&
+                        !el.hidden &&
+                        !(el.hasAttribute && el.hasAttribute("hidden")) &&
+                        !el.matches("script, style, noscript, button, input, select, textarea, svg, path, img, br, hr") &&
+                        !el.querySelector(".tk-quest-item, .ques-item, [questionid]") &&
+                        !isExcludedAnc(el)
+                    );
+
+                    const headingByItem = new Map();
+                    let activeTitle = "";
+                    let prevContainerChainKey = "";
+
+                    for (let k = 0; k < items.length; k++) {
+                        const item = items[k];
+                        // 1) 优先从结构化分组容器（如 .sec-item.anchor-item > h4.sec-title[data-nav="title-box"]）直接提取标题链
+                        const secContainers = [];
+                        let anc = item.parentElement;
+                        while (anc && anc !== doc.body && anc !== doc.documentElement) {
+                            if (anc.matches && anc.matches(".sec-item, .anchor-item, .part-item, .type-item, .group-item, .ques-type-box, [class*='sec-item'], [class*='part-item'], [class*='type-item']")) {
+                                secContainers.unshift(anc);
+                            }
+                            anc = anc.parentElement;
+                        }
+                        const containerChain = [];
+                        for (const sc of secContainers) {
+                            const titleNodes = [...sc.querySelectorAll(".sec-title, [data-nav='title-box'], h1, h2, h3, h4, h5, h6, .part-title, .type-title, .sub-title, .know-title, .point-title, .group-title, .topic-title, .pui_quetype, .pui_part, .ques-type")].filter(el =>
+                                !el.contains(item) && (el.compareDocumentPosition(item) & 4) &&
+                                !secContainers.some(otherSc => otherSc !== sc && sc.contains(otherSc) && otherSc.contains(el)) &&
+                                !isExcludedAnc(el)
+                            );
+                            const topTitleNodes = titleNodes.filter(el => !titleNodes.some(other => other !== el && other.contains(el)));
+                            for (const tn of topTitleNodes) {
+                                const h = cleanHeading(tn, true);
+                                if (h && containerChain[containerChain.length - 1] !== h) {
+                                    containerChain.push(h);
+                                }
+                            }
+                        }
+
+                        if (containerChain.length > 0) {
+                            const chainKey = containerChain.join("|||");
+                            activeTitle = containerChain[containerChain.length - 1];
+                            const leadHeadings = (chainKey !== prevContainerChainKey && containerChain.length > 1)
+                                ? containerChain.slice(0, -1)
+                                : [];
+                            prevContainerChainKey = chainKey;
+                            headingByItem.set(item, { domGroupTitle: activeTitle, leadHeadings });
+                            continue;
+                        }
+
+                        // 2) 回退：扫描上一题与当前题之间的兄弟标题节点
+                        const prevNode = k > 0
+                            ? items[k - 1]
+                            : (mainTitleEl && !mainTitleEl.contains(item) && (mainTitleEl.compareDocumentPosition(item) & 4) ? mainTitleEl : null);
+
+                        const rangeEls = allCandidates.filter(el => {
+                            if (el.contains(item) || item.contains(el) || !(el.compareDocumentPosition(item) & 4)) return false;
+                            if (prevNode) {
+                                if (prevNode.contains(el) || el.contains(prevNode) || !(prevNode.compareDocumentPosition(el) & 4)) return false;
+                            }
+                            for (let j = 0; j < items.length; j++) {
+                                if (items[j].contains(el) || el.contains(items[j])) return false;
+                            }
+                            return true;
+                        });
+                        const rangeSet = new Set(rangeEls);
+                        const topRangeEls = rangeEls.filter(el => !rangeSet.has(el.parentElement));
+
+                        const pending = [];
+                        const visitSubtree = node => {
+                            if (!node || node.nodeType !== 1) return;
+                            const children = [...node.children];
+                            const standaloneChildren = children.filter(ch => {
+                                const chH = cleanHeading(ch, false);
+                                return chH && !bareLabelRe.test(chH);
+                            });
+                            if (standaloneChildren.length >= 2) {
+                                for (const ch of children) visitSubtree(ch);
+                                return;
+                            }
+                            const h = cleanHeading(node, false);
+                            if (h) {
+                                if (pending[pending.length - 1] !== h && activeTitle !== h) pending.push(h);
+                                return;
+                            }
+                            for (const ch of children) visitSubtree(ch);
+                        };
+                        for (const topEl of topRangeEls) visitSubtree(topEl);
+
+                        let leadHeadings = [];
+                        if (pending.length > 0) {
+                            activeTitle = pending[pending.length - 1];
+                            if (pending.length > 1) leadHeadings = pending.slice(0, -1);
+                        }
+                        headingByItem.set(item, { domGroupTitle: activeTitle, leadHeadings });
+                    }
+                    return { title, headingByItem };
+                };
+
+                const collectFromDoc = doc => {
+                    const rawAll = [...doc.querySelectorAll(".qml_paper.ques-list .tk-quest-item[questionid], .tk-quest-item[questionid], .ques-item[questionid], [questionid][bankid]")];
+                    const rawItems = rawAll.filter(el => !el.closest("[hidden], .que-detail-pos, .fixed-nav, .other-info") && !rawAll.some(other => other !== el && other.contains(el)));
+                    if (!rawItems.length) return null;
+                    const { title, headingByItem } = extractPaperDomHeadings(doc, rawItems, "精品专辑试卷");
+                    const seen = new Set(), questions = [];
+                    for (const node of rawItems) {
+                        const id = String(node.getAttribute("questionid") || "");
+                        const bankId = String(node.getAttribute("bankid") || "");
+                        if (!/^\d+$/.test(id) || seen.has(id)) continue;
+                        seen.add(id);
+                        const hm = headingByItem.get(node) || { domGroupTitle: "", leadHeadings: [] };
+                        questions.push({ id, bankId, domGroupTitle: hm.domGroupTitle || "", leadHeadings: hm.leadHeadings || [] });
+                    }
+                    if (!questions.length) return null;
+                    let fallbackBankId = String(doc.querySelector("[bankid]")?.getAttribute("bankid") || "").trim();
+                    if (!fallbackBankId) {
+                        try {
+                            const cookies = Object.fromEntries(String(doc.cookie || "").split(";").map(v => v.trim().split(/=(.*)/s).slice(0, 2)));
+                            fallbackBankId = String(cookies.bankId || window.tkBusiness?.tools?.getcookiebankid?.() || "").trim();
+                        } catch {}
+                    }
+                    if (fallbackBankId) {
+                        for (const q of questions) {
+                            if (!q.bankId) q.bankId = fallbackBankId;
+                        }
+                    }
+                    return { title, questions };
+                };
+                const docs = [document];
+                for (const ifr of document.querySelectorAll("iframe")) {
+                    try { if (ifr.contentDocument) docs.push(ifr.contentDocument); } catch {}
                 }
-                if (!questions.length) return null;
-                const title = document.querySelector("main.special-topic-detail .exam-info h1, main.special-topic-detail .exam-info h2, main.special-topic-detail .exam-info h3")?.textContent?.trim()
-                    || document.title?.trim() || "精品专辑试卷";
-                return JSON.stringify({ title, questions })
+                let best = null;
+                for (const d of docs) {
+                    const res = collectFromDoc(d);
+                    if (!res) continue;
+                    if (!best) best = res;
+                    else {
+                        const bestHasH = best.questions.some(q => q.domGroupTitle);
+                        const resHasH = res.questions.some(q => q.domGroupTitle);
+                        if (resHasH && !bestHasH) best = res;
+                    }
+                }
+                return best ? JSON.stringify(best) : null;
             } catch {
-                return null
+                return null;
             }
         }
     }).catch(() => null);
-    const a = t?.[0]?.result;
-    return a ? JSON.parse(a) : null
+    let t = await runExtract(!0);
+    if (!t || !t.some(r => r?.result)) t = await runExtract(!1);
+    const valid = (t || []).map(r => {
+        try { return r?.result ? JSON.parse(r.result) : null; } catch { return null; }
+    }).filter(r => r?.questions?.length);
+    if (!valid.length) return null;
+    valid.sort((a, b) => (b.questions.filter(q => q.domGroupTitle).length - a.questions.filter(q => q.domGroupTitle).length) || (b.questions.length - a.questions.length));
+    const chosen = valid[0];
+    for (const other of valid.slice(1)) {
+        const map = new Map(other.questions.map(q => [String(q.id), q]));
+        for (const q of chosen.questions) {
+            if (!q.domGroupTitle && map.get(String(q.id))?.domGroupTitle) {
+                q.domGroupTitle = map.get(String(q.id)).domGroupTitle;
+                q.leadHeadings = map.get(String(q.id)).leadHeadings || [];
+            }
+        }
+    }
+    return chosen;
 }
 
 /* 组卷中心 /zujuan/ 的试题篮由官方脚本异步初始化；页面稳定结构在
@@ -697,6 +998,7 @@ async function resolveZujuanUserPaperDoc(e, t) {
             url: `https://mzujuan.xkw.com/${r}q${e2}.html?target=ques_detail&quesId=${e2}&subjectId=${r}`
         })),
         n = await loadMobileQuesBatchViaTab(i),
+        xmlHeadMap = extractPaperXmlHeadingsMap(a.paperXml),
         o = {
             title: a.title || "",
             pageTitle: a.title || "",
@@ -706,7 +1008,10 @@ async function resolveZujuanUserPaperDoc(e, t) {
             learnGradeName: n[0]?.paperSource?.[0]?.learnGradeName || "",
             learnGrade: n[0]?.paperSource?.[0]?.learnGrade || null,
             subjectId: r,
-            quesList: n.map(normalizeZujuanPaperRawQuestion)
+            quesList: n.map(item => {
+                const hm = xmlHeadMap.get(String(item?.id || ""));
+                return normalizeZujuanPaperRawQuestion(hm ? { ...item, ...hm } : item);
+            })
         };
     return withZujuanSingleListening({
         title: buildZujuanTitle(o),
@@ -722,9 +1027,6 @@ async function resolveZujuanUserPaperDoc(e, t) {
 }
 
 async function resolveZujuanThematicPaperDoc(e, t, sourceLabel = "mobile_fetch_thematic") {
-    /* 「上好课」等 questionList 页（/shanghaoke/{id}.html、章节落地页）与普通 PC 试卷页同构：
-     * 题干已完整直出在 DOM。优先 PC 站 DOM 直抓（无答案、不触发移动站 WAF），
-     * 失败（页面结构不同/题目为空）才回退移动站逐题。 */
     if (t) {
         try {
             const domDoc = await resolveZujuanPaperDocFromDOM(e, t, true);
@@ -742,13 +1044,17 @@ async function resolveZujuanThematicPaperDoc(e, t, sourceLabel = "mobile_fetch_t
         }));
     if (!s || r.some(q => !/\/\d+q\d+\.html/.test(q.url))) throw new Error("EXPORT_EXTRACT_FAILED");
     const i = await loadMobileQuesBatchViaTab(r, 3e4),
+        domHeadMap = new Map(a.questions.map(q => [String(q.id), { domGroupTitle: q.domGroupTitle || "", leadHeadings: q.leadHeadings || [] }])),
         n = {
             title: a.title || "精品专辑试卷",
             from: i[0]?.from || "",
             learnGradeName: i[0]?.paperSource?.[0]?.learnGradeName || "",
             learnGrade: i[0]?.paperSource?.[0]?.learnGrade || null,
             subjectId: s,
-            quesList: i.map(normalizeZujuanPaperRawQuestion)
+            quesList: i.map(item => {
+                const hm = domHeadMap.get(String(item?.id || ""));
+                return normalizeZujuanPaperRawQuestion(hm ? { ...item, ...hm } : item);
+            })
         };
     return withZujuanSingleListening({
         title: buildZujuanTitle(n),
@@ -1059,7 +1365,6 @@ async function resolveZujuanPaperDocFromMobile(e, currentTabId = null) {
     if (isThematic) return resolveZujuanThematicPaperDoc(e, currentTabId);
     const t = buildZujuanMobilePaperUrl(e);
     if (!t) throw new Error("EXPORT_EXTRACT_FAILED");
-    /* 分享试卷（share-paper / recorddetail）：经分享接口取数，组装逻辑与普通试卷一致 */
     if (/recorddetail/i.test(t)) {
         const a2 = await loadSharePaperViaTab(t),
             s2 = {
@@ -1088,9 +1393,17 @@ async function resolveZujuanPaperDocFromMobile(e, currentTabId = null) {
     const a = await fetchMobilePage(t),
         s = a?.data?.[0],
         r = s?.paper,
-        /* 精品专辑页（thematiclist）：题目列表在 paper.queses（普通试卷页在 paper.quesList），顶层 quesList 兜底 */
         n = Array.isArray(r?.quesList) ? r.quesList : Array.isArray(r?.queses) ? r.queses : Array.isArray(s?.quesList) ? s.quesList : null;
     if (!r || !n) throw new Error("EXPORT_EXTRACT_FAILED");
+    let domHeadMap = new Map();
+    if (currentTabId) {
+        try {
+            const domInfo = await readThematicPaperInfoFromTab(currentTabId);
+            if (domInfo?.questions?.length) {
+                domHeadMap = new Map(domInfo.questions.map(q => [String(q.id), { domGroupTitle: q.domGroupTitle || "", leadHeadings: q.leadHeadings || [] }]));
+            }
+        } catch {}
+    }
     const i = new URL(t).searchParams.get("subjectId") || String(s?.bankId || ""),
         o = {
             title: r.title || "",
@@ -1101,7 +1414,10 @@ async function resolveZujuanPaperDocFromMobile(e, currentTabId = null) {
             learnGradeName: n[0]?.paperSource?.[0]?.learnGradeName || "",
             learnGrade: n[0]?.paperSource?.[0]?.learnGrade || null,
             subjectId: i,
-            quesList: n.map(normalizeZujuanPaperRawQuestion)
+            quesList: n.map(item => {
+                const hm = domHeadMap.get(String(item?.id || ""));
+                return normalizeZujuanPaperRawQuestion(hm ? { ...item, ...hm } : item);
+            })
         };
     return withZujuanSingleListening({
         title: buildZujuanTitle(o),
@@ -1132,10 +1448,37 @@ async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswe
             },
             world: "MAIN",
             func: f
-        }).then(r => r?.[0]?.result ?? null).catch(() => null);
-    /* 1) 触发"显示全部答案和解析"（若有开关且未展开）。未登录时页面注入 .item.no-login 提示、
-     * 答案节点保持为空——此时仍返回题干（题目正文始终可下），仅标记缺答案。
-     * 精品专辑页（thematiclist）无此开关：返回 false，跳过答案轮询直接抓题干+选项。 */
+        }).then(r => r?.[0]?.result ?? null).catch(() => null),
+        execAll = async f => {
+            let res = await chrome.scripting.executeScript({
+                target: { tabId, allFrames: !0 },
+                world: "MAIN",
+                func: f
+            }).catch(() => null);
+            if (!res || !res.some(r => r?.result)) {
+                res = await chrome.scripting.executeScript({
+                    target: { tabId, frameIds: [0] },
+                    world: "MAIN",
+                    func: f
+                }).catch(() => null);
+            }
+            const valid = (res || []).map(r => {
+                try { return r?.result ? JSON.parse(r.result) : null; } catch { return null; }
+            }).filter(r => r?.questions?.length);
+            if (!valid.length) return null;
+            valid.sort((a, b) => (b.questions.filter(q => q.domGroupTitle).length - a.questions.filter(q => q.domGroupTitle).length) || (b.questions.length - a.questions.length));
+            const chosen = valid[0];
+            for (const other of valid.slice(1)) {
+                const map = new Map(other.questions.map(q => [String(q.id), q]));
+                for (const q of chosen.questions) {
+                    if (!q.domGroupTitle && map.get(String(q.id))?.domGroupTitle) {
+                        q.domGroupTitle = map.get(String(q.id)).domGroupTitle;
+                        q.leadHeadings = map.get(String(q.id)).leadHeadings || [];
+                    }
+                }
+            }
+            return chosen;
+        };
     const hasAnswerSwitch = await exec(() => {
         try {
             const label = document.querySelector('label[for="isshowAnswer"]');
@@ -1145,7 +1488,6 @@ async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswe
             return !1
         } catch { return !1 }
     });
-    /* 轮询等待答案注入结果（登录注入真实答案 / 未登录注入 .no-login 提示），最多 6s */
     if (hasAnswerSwitch) {
         const deadline = Date.now() + 6e3;
         for (;;) {
@@ -1163,64 +1505,296 @@ async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswe
             await new Promise(r => setTimeout(r, 700))
         }
     }
-    /* 2) DOM 抓取全部题目 */
-    const raw = await exec(() => {
+    const parsed = await execAll(() => {
         try {
-            const title = document.querySelector(".exam-title .title-txt .txt")?.textContent?.trim()
-                || document.querySelector("main.special-topic-detail .exam-info h1, main.special-topic-detail .exam-info h2, main.special-topic-detail .exam-info h3")?.textContent?.trim()
-                || document.title?.replace(/\s*-\s*组卷网\s*$/i, "").trim() || "";
-            const items = [...document.querySelectorAll(".tk-quest-item[questionid]")].filter(el => el.closest(".tk-quest-item") === el),
-                seen = new Set,
-                questions = [];
-            for (const item of items) {
-                const id = String(item.getAttribute("questionid") || "");
-                if (!/^\d+$/.test(id) || seen.has(id)) continue;
-                seen.add(id);
-                const cnt = item.querySelector(".quesdiv .exam-item__cnt") || item.querySelector(".exam-item__cnt");
-                let body = cnt?.innerHTML || "";
-                if (!body) {
-                    const qd = item.querySelector(".quesdiv");
-                    body = qd ? (qd.innerHTML || "").replace(/<div[^>]*class="[^>]*exam-item__opt[^>]*"[^>]*>[\s\S]*$/i, "") : ""
+
+                const extractPaperDomHeadings = (doc, items, fallbackTitle = "") => {
+                    const titleSels = [
+                        ".exam-title .title-txt .txt",
+                        "main.special-topic-detail .exam-info h1",
+                        "main.special-topic-detail .exam-info h2",
+                        "main.special-topic-detail .exam-info h3",
+                        "#pui_maintitle",
+                        ".qml-title",
+                        ".paper-title",
+                        ".exam-title h1",
+                        ".exam-title h2",
+                        "h2.exam-title",
+                        ".exam-title"
+                    ];
+                    let mainTitleEl = null, title = "";
+                    for (const sel of titleSels) {
+                        for (const el of doc.querySelectorAll(sel)) {
+                            if (el.querySelector(".tk-quest-item, .ques-item, [questionid]")) continue;
+                            const t = (el.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim().split(/\r?\n/).map(s => s.trim()).find(Boolean) || "";
+                            if (t) { mainTitleEl = el; title = t; break; }
+                        }
+                        if (title) break;
+                    }
+                    if (!title) {
+                        title = (doc.title || "").replace(/\s*[-_–—]\s*组卷网.*$/i, "").trim() || fallbackTitle;
+                    }
+                    const normMain = title.replace(/\s+/g, "");
+                    const item0 = items[0];
+                    if (!mainTitleEl && normMain && item0 && doc.body) {
+                        const candidates = [...doc.body.querySelectorAll("*")].filter(el =>
+                            !el.contains(item0) && (el.compareDocumentPosition(item0) & 4) &&
+                            !el.querySelector(".tk-quest-item, .ques-item, [questionid]") &&
+                            (el.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF\s]+/g, "") === normMain
+                        );
+                        if (candidates.length) mainTitleEl = candidates[candidates.length - 1];
+                    }
+
+                    const badgeRe = /^(?:知识点|题型|考点|易错点|重难点|重点|难点|方法|技巧|专题|模块|微专题|核心素养|素养|拓展|变式|例题|练习|真题|押题|原创)$/;
+                    const bareLabelRe = /^(?:知识点|题型|考点|易错点|重难点|重点|难点|方法|技巧|专题|模块|微专题|核心素养|素养|拓展|变式|例题|练习|真题|押题|原创)\s*[一二三四五六七八九十百零\d]*$/i;
+                    const uiRe = /^(?:添加题型下试题|删除|上移|下移|换一换|全部加入试题篮|加入试题篮|移出试题篮|显示答案|隐藏答案|显示答案与解析|展开|收起|报错|纠错|收藏|下载|打印|编辑|分值|设定分值|批量设置分值|清空试题篮|恢复|还原|预览|保存|分享|导出|更多|全部|收起全部|展开全部|查看解析|隐藏解析|试题分析|试卷分析|命题意图|共\s*\d+\s*道?\s*题)$/;
+                    const metaSubRe = /(?:显示答案|隐藏答案|试卷分析|命题意图|下载试卷|收藏试卷|浏览(?:量|次数)?\s*[:：]?\s*\d+|更新时间\s*[:：]|总分\s*[:：]?\s*\d+|考试时间\s*[:：]?\s*\d+|共\s*\d+\s*道?\s*题|全部加入试题篮|加入试题篮|添加题型下试题)/i;
+                    const excludeAncSel = ".exam-title, .exam-info, #pui_maintitle, .pui_seal, .paper-info, .paper-meta, .paper-head, .paper-toolbar, .filter-box, .screen-box, .tool-bar, .toolbar, .operate-bar, .ctrl-box, .ques-additional, .ques-src, .exam-item__opt, .page-box, .pagination, .pagenum, .no-login, .layui-layer, .modal, .dialog, .bread-crumb, .breadcrumb, .bread-nav, .crumbs, .sidebar, .other-info, .fixed-nav, .que-detail-pos, .sec-explain, .catalog, .tree-box, .footer, [hidden], nav, header, footer, aside";
+
+                    const isExcludedAnc = el => {
+                        let cur = el;
+                        while (cur && cur.nodeType === 1) {
+                            if (cur === mainTitleEl || cur.hidden || (cur.hasAttribute && cur.hasAttribute("hidden"))) return true;
+                            if (cur.matches && cur.matches(".tk-quest-item, .ques-item, [questionid]")) return true;
+                            if (cur.matches && cur.matches(excludeAncSel) && !cur.querySelector(".tk-quest-item, .ques-item, [questionid]")) {
+                                return true;
+                            }
+                            cur = cur.parentElement;
+                        }
+                        return false;
+                    };
+
+                    const cleanHeading = (node, forceHeadEl = false) => {
+                        if (!node || node.nodeType !== 1 || node.hidden || (node.hasAttribute && node.hasAttribute("hidden"))) return "";
+                        if (isExcludedAnc(node)) return "";
+                        const clone = node.cloneNode(true);
+                        clone.querySelectorAll("script, style, noscript, button, input, select, textarea, svg, b.tag, .tag, [class*='tag'], .btn, .op-btn, .score-box, .pui_score, .ques-additional, .ques-src, .exam-item__opt, .sec-explain, .que-detail-pos, [hidden]").forEach(n => n.remove());
+                        clone.querySelectorAll("img").forEach(img => {
+                            const alt = img.getAttribute("alt") || img.getAttribute("latex") || "";
+                            img.replaceWith(doc.createTextNode(alt));
+                        });
+                        for (const leaf of [...clone.querySelectorAll("*")]) {
+                            if (leaf.children.length > 0) continue;
+                            const lt = (leaf.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim();
+                            if (uiRe.test(lt)) leaf.remove();
+                        }
+                        const remLeaves = [...clone.querySelectorAll("*")].filter(el => el.children.length === 0 && (el.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim());
+                        if (remLeaves.length >= 1) {
+                            const lastLeaf = remLeaves[remLeaves.length - 1];
+                            const lastTxt = (lastLeaf.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim();
+                            if (badgeRe.test(lastTxt)) {
+                                const fullNow = (clone.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim();
+                                if (fullNow.endsWith(lastTxt)) {
+                                    const beforeTxt = fullNow.slice(0, fullNow.length - lastTxt.length).trim();
+                                    if (beforeTxt.length >= 2) lastLeaf.remove();
+                                }
+                            }
+                            if (remLeaves.length >= 2) {
+                                const firstLeaf = remLeaves[0];
+                                const firstTxt = (firstLeaf.textContent || "").replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "").trim();
+                                if (bareLabelRe.test(firstTxt)) {
+                                    firstLeaf.textContent = firstTxt + " ";
+                                }
+                            }
+                        }
+                        let txt = (clone.textContent || "")
+                            .replace(/[\u200B-\u200F\uFEFF\uE000-\uF8FF]/g, "")
+                            .replace(/[\r\n\t\u00A0]+/g, " ")
+                            .replace(/\s{2,}/g, " ")
+                            .replace(/添加题型下试题|全部加入试题篮|加入试题篮|换一换/g, "")
+                            .trim();
+                        txt = txt.replace(/^((?:知识点|题型|考点|专题|模块|易错点|重难点|方法|技巧|核心素养|微专题|变式|拓展)\s*[一二三四五六七八九十百零\d]*)(?=[\u4e00-\u9fa5A-Za-z（(【])/, "$1 ");
+                        txt = txt.replace(/^([\s\S]{2,}?)(?:\s+|(?<=[）)】]))(?:知识点|题型|考点|专题|模块|易错点|重难点|方法|技巧|核心素养|微专题|变式|拓展)\s*$/, "$1").trim();
+                        if (!txt || txt.length > 120 || badgeRe.test(txt)) return "";
+                        if (normMain && txt.replace(/\s+/g, "") === normMain) return "";
+                        if (metaSubRe.test(txt)) return "";
+                        if (/^(?:第\s*\d+\s*页|上一页|下一页|展开|收起|全部|综合排序|最新|最热|\d+)$/i.test(txt)) return "";
+                        const isHeadEl = forceHeadEl || node.matches("h1, h2, h3, h4, h5, h6, [data-nav='title-box'], .sec-title, .qml-title, .part-title, .type-title, .sub-title, .know-title, .point-title, .group-title, .topic-title, .pui_quetype, .pui_part, .ques-type, [class*='sec-title'], [class*='type-title'], [class*='part-title'], [class*='sub-title'], [class*='know-title'], [class*='point-title'], [class*='group-title'], [class*='topic-title'], [class*='know'], [class*='title'], [class*='head']");
+                        const isHeadTxt = /^(?:知识点|题型|考点|易错点|重难点|重点|难点|方法|技巧|专题|模块|微专题|核心素养|变式|拓展|基础|能力|培优|综合|课前|课堂|课后|巩固|提升|突破|训练|练习|达标|闯关|探究|直击|高频|真题|第[一二三四五六七八九十百零\d]+[部分卷章节课讲课时单元]|[一二三四五六七八九十百零]+\s*[、.．]|[（(][一二三四五六七八九十百零\d]+[)）]|\d+\s*[.、．]\s*[^\d]|【.+】)/.test(txt);
+                        return (isHeadEl || isHeadTxt) ? txt : "";
+                    };
+
+                    const searchRoot = doc.querySelector("main.good-lesson-detail .exam-cnt, main.good-lesson-detail, main.special-topic-detail .exam-info, main.special-topic-detail, #paperDetailPage, #pui_body, .exam-cnt, .paper-cnt, main") || doc.body;
+                    const allCandidates = [...(searchRoot || doc.body).querySelectorAll("*")].filter(el =>
+                        el.nodeType === 1 &&
+                        !el.hidden &&
+                        !(el.hasAttribute && el.hasAttribute("hidden")) &&
+                        !el.matches("script, style, noscript, button, input, select, textarea, svg, path, img, br, hr") &&
+                        !el.querySelector(".tk-quest-item, .ques-item, [questionid]") &&
+                        !isExcludedAnc(el)
+                    );
+
+                    const headingByItem = new Map();
+                    let activeTitle = "";
+                    let prevContainerChainKey = "";
+
+                    for (let k = 0; k < items.length; k++) {
+                        const item = items[k];
+                        // 1) 优先从结构化分组容器（如 .sec-item.anchor-item > h4.sec-title[data-nav="title-box"]）直接提取标题链
+                        const secContainers = [];
+                        let anc = item.parentElement;
+                        while (anc && anc !== doc.body && anc !== doc.documentElement) {
+                            if (anc.matches && anc.matches(".sec-item, .anchor-item, .part-item, .type-item, .group-item, .ques-type-box, [class*='sec-item'], [class*='part-item'], [class*='type-item']")) {
+                                secContainers.unshift(anc);
+                            }
+                            anc = anc.parentElement;
+                        }
+                        const containerChain = [];
+                        for (const sc of secContainers) {
+                            const titleNodes = [...sc.querySelectorAll(".sec-title, [data-nav='title-box'], h1, h2, h3, h4, h5, h6, .part-title, .type-title, .sub-title, .know-title, .point-title, .group-title, .topic-title, .pui_quetype, .pui_part, .ques-type")].filter(el =>
+                                !el.contains(item) && (el.compareDocumentPosition(item) & 4) &&
+                                !secContainers.some(otherSc => otherSc !== sc && sc.contains(otherSc) && otherSc.contains(el)) &&
+                                !isExcludedAnc(el)
+                            );
+                            const topTitleNodes = titleNodes.filter(el => !titleNodes.some(other => other !== el && other.contains(el)));
+                            for (const tn of topTitleNodes) {
+                                const h = cleanHeading(tn, true);
+                                if (h && containerChain[containerChain.length - 1] !== h) {
+                                    containerChain.push(h);
+                                }
+                            }
+                        }
+
+                        if (containerChain.length > 0) {
+                            const chainKey = containerChain.join("|||");
+                            activeTitle = containerChain[containerChain.length - 1];
+                            const leadHeadings = (chainKey !== prevContainerChainKey && containerChain.length > 1)
+                                ? containerChain.slice(0, -1)
+                                : [];
+                            prevContainerChainKey = chainKey;
+                            headingByItem.set(item, { domGroupTitle: activeTitle, leadHeadings });
+                            continue;
+                        }
+
+                        // 2) 回退：扫描上一题与当前题之间的兄弟标题节点
+                        const prevNode = k > 0
+                            ? items[k - 1]
+                            : (mainTitleEl && !mainTitleEl.contains(item) && (mainTitleEl.compareDocumentPosition(item) & 4) ? mainTitleEl : null);
+
+                        const rangeEls = allCandidates.filter(el => {
+                            if (el.contains(item) || item.contains(el) || !(el.compareDocumentPosition(item) & 4)) return false;
+                            if (prevNode) {
+                                if (prevNode.contains(el) || el.contains(prevNode) || !(prevNode.compareDocumentPosition(el) & 4)) return false;
+                            }
+                            for (let j = 0; j < items.length; j++) {
+                                if (items[j].contains(el) || el.contains(items[j])) return false;
+                            }
+                            return true;
+                        });
+                        const rangeSet = new Set(rangeEls);
+                        const topRangeEls = rangeEls.filter(el => !rangeSet.has(el.parentElement));
+
+                        const pending = [];
+                        const visitSubtree = node => {
+                            if (!node || node.nodeType !== 1) return;
+                            const children = [...node.children];
+                            const standaloneChildren = children.filter(ch => {
+                                const chH = cleanHeading(ch, false);
+                                return chH && !bareLabelRe.test(chH);
+                            });
+                            if (standaloneChildren.length >= 2) {
+                                for (const ch of children) visitSubtree(ch);
+                                return;
+                            }
+                            const h = cleanHeading(node, false);
+                            if (h) {
+                                if (pending[pending.length - 1] !== h && activeTitle !== h) pending.push(h);
+                                return;
+                            }
+                            for (const ch of children) visitSubtree(ch);
+                        };
+                        for (const topEl of topRangeEls) visitSubtree(topEl);
+
+                        let leadHeadings = [];
+                        if (pending.length > 0) {
+                            activeTitle = pending[pending.length - 1];
+                            if (pending.length > 1) leadHeadings = pending.slice(0, -1);
+                        }
+                        headingByItem.set(item, { domGroupTitle: activeTitle, leadHeadings });
+                    }
+                    return { title, headingByItem };
+                };
+
+            const collectFromDoc = doc => {
+                const rawAll = [...doc.querySelectorAll(".qml_paper.ques-list .tk-quest-item[questionid], .tk-quest-item[questionid], .ques-item[questionid]")];
+                const items = rawAll.filter(el => !el.closest("[hidden], .que-detail-pos, .fixed-nav, .other-info") && !rawAll.some(other => other !== el && other.contains(el)));
+                if (!items.length) return null;
+                const { title, headingByItem } = extractPaperDomHeadings(doc, items, "");
+                const seen = new Set, questions = [];
+                for (const item of items) {
+                    const id = String(item.getAttribute("questionid") || "");
+                    if (!/^\d+$/.test(id) || seen.has(id)) continue;
+                    seen.add(id);
+                    const cnt = item.querySelector(".quesdiv .exam-item__cnt") || item.querySelector(".exam-item__cnt");
+                    let body = cnt?.innerHTML || "";
+                    if (!body) {
+                        const qd = item.querySelector(".quesdiv");
+                        body = qd ? (qd.innerHTML || "").replace(/<div[^>]*class="[^>]*exam-item__opt[^>]*"[^>]*>[\s\S]*$/i, "") : ""
+                    }
+                    body = body.replace(/^(\s*<(?:p|span|div)[^>]*>\s*)*\d+[\.、．]\s*/, "").trim();
+                    const opt = item.querySelector(".quesdiv .exam-item__opt");
+                    let answer = "", parse = "", categoriesInfo = "";
+                    if (opt) {
+                        const aEl = opt.querySelector(".item.answer"),
+                            needLogin = !!opt.querySelector(".item.no-login");
+                        if (aEl && !needLogin) answer = aEl.innerHTML || "";
+                        const pEl = opt.querySelector(".item.analysis, .item.parse, .item.jiexi, [class*='parse'], [class*='analysis'], [class*='jiexi']");
+                        if (pEl && !needLogin) parse = pEl.innerHTML || "";
+                        const kEl = opt.querySelector(".item.knowlegde, .item.knowledge");
+                        if (kEl) categoriesInfo = [...kEl.querySelectorAll("a.knowledge-name")].map(el => el.textContent?.trim() || "").filter(Boolean).join(",")
+                    }
+                    const infoCnt = [...item.querySelectorAll(".ques-additional .left-msg .info-cnt")].map(el => el.textContent?.trim() || ""),
+                        srcEl = item.querySelector(".ques-src");
+                    let fromTxt = srcEl?.textContent?.trim() || "";
+                    fromTxt = fromTxt.replace(/^来源[:：]\s*/, "").trim();
+                    const hm = headingByItem.get(item) || { domGroupTitle: "", leadHeadings: [] };
+                    questions.push({
+                        quesBody: body || "",
+                        quesAnswer: answer || "",
+                        quesParse: parse || "",
+                        quesAudio: "",
+                        quesChildNum: Number(item.getAttribute("queschildnum")) || 0,
+                        qbmId: "",
+                        categoriesInfo,
+                        quesTypeName: infoCnt[0] || "",
+                        quesDiffName: infoCnt[1] || "",
+                        domGroupTitle: hm.domGroupTitle || "",
+                        leadHeadings: hm.leadHeadings || [],
+                        from: fromTxt,
+                        id,
+                        updateTime: ""
+                    })
                 }
-                body = body.replace(/^(\s*<(?:p|span|div)[^>]*>\s*)*\d+[\.、．]\s*/, "").trim();
-                const opt = item.querySelector(".quesdiv .exam-item__opt");
-                let answer = "", parse = "", categoriesInfo = "";
-                if (opt) {
-                    const aEl = opt.querySelector(".item.answer"),
-                        needLogin = !!opt.querySelector(".item.no-login");
-                    if (aEl && !needLogin) answer = aEl.innerHTML || "";
-                    const pEl = opt.querySelector(".item.analysis, .item.parse, .item.jiexi, [class*='parse'], [class*='analysis'], [class*='jiexi']");
-                    if (pEl && !needLogin) parse = pEl.innerHTML || "";
-                    const kEl = opt.querySelector(".item.knowlegde, .item.knowledge");
-                    if (kEl) categoriesInfo = [...kEl.querySelectorAll("a.knowledge-name")].map(el => el.textContent?.trim() || "").filter(Boolean).join(",")
+                let bankId = (items.find(el => el.getAttribute("bankid"))?.getAttribute("bankid") || doc.querySelector("[bankid]")?.getAttribute("bankid") || "").trim();
+                if (!bankId) {
+                    try {
+                        const cookies = Object.fromEntries(String(doc.cookie || "").split(";").map(v => v.trim().split(/=(.*)/s).slice(0, 2)));
+                        bankId = String(cookies.bankId || window.tkBusiness?.tools?.getcookiebankid?.() || "").trim();
+                    } catch {}
                 }
-                const infoCnt = [...item.querySelectorAll(".ques-additional .left-msg .info-cnt")].map(el => el.textContent?.trim() || ""),
-                    srcEl = item.querySelector(".ques-src");
-                let fromTxt = srcEl?.textContent?.trim() || "";
-                fromTxt = fromTxt.replace(/^来源[:：]\s*/, "").trim();
-                questions.push({
-                    quesBody: body || "",
-                    quesAnswer: answer || "",
-                    quesParse: parse || "",
-                    quesAudio: "",
-                    quesChildNum: Number(item.getAttribute("queschildnum")) || 0,
-                    qbmId: "",
-                    categoriesInfo,
-                    quesTypeName: infoCnt[0] || "",
-                    quesDiffName: infoCnt[1] || "",
-                    from: fromTxt,
-                    id,
-                    updateTime: ""
-                })
+                return questions.length ? { title, bankId, questions } : null;
+            };
+            const docs = [document];
+            for (const ifr of document.querySelectorAll("iframe")) {
+                try { if (ifr.contentDocument) docs.push(ifr.contentDocument); } catch {}
             }
-            return questions.length ? JSON.stringify({ title, bankId: (items[0]?.getAttribute("bankid") || "").trim(), questions }) : null
+            let best = null;
+            for (const d of docs) {
+                const res = collectFromDoc(d);
+                if (!res) continue;
+                if (!best) best = res;
+                else {
+                    const bestHasH = best.questions.some(q => q.domGroupTitle);
+                    const resHasH = res.questions.some(q => q.domGroupTitle);
+                    if (resHasH && !bestHasH) best = res;
+                }
+            }
+            return best ? JSON.stringify(best) : null;
         } catch {
             return null
         }
     });
-    if (!raw) throw new Error("EXPORT_EXTRACT_FAILED");
-    const parsed = JSON.parse(raw);
-    if (!parsed.questions?.length) throw new Error("EXPORT_EXTRACT_FAILED");
+    if (!parsed || !parsed.questions?.length) throw new Error("EXPORT_EXTRACT_FAILED");
     let subjectId = String(parsed.bankId || "");
     if (!/^\d+$/.test(subjectId)) {
         try {
@@ -1268,7 +1842,6 @@ async function resolveZujuanPaperDocFromDOM(e, currentTabId = null, requireAnswe
             from: (m && m.from) || q.from || ""
         });
     });
-    // 专题题目列表的 PC DOM 常常只有题干；空答案时继续走移动站题目详情补取。
     if (requireAnswers && list.every(q => !String(q.quesAnswer || "").trim())) return null;
     const fromText = list[0]?.from || "";
     return withZujuanSingleListening({
