@@ -2144,7 +2144,7 @@ function svgToOmml(svgText) {
                     }
 
                     const dec = decodeMathChar(ch, fontFamily);
-                    if (/[一-龥]/.test(dec.text || "")) return null;
+                    if (/[\u4e00-\u9fa5]/.test(dec.text || "")) return null;
                     if (!dec.text || !dec.text.trim()) {
                         runningX += fsRaw * 0.35;
                         continue;
