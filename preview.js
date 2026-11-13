@@ -650,7 +650,7 @@ function matchGlyphViaCanvas(subList) {
         }
         if (!pop) return null;
         const aspect = w / h;
-        let best = null, bestSim = 0.62;
+        let best = null, bestSim = 0.80;
         for (const item of atlas) {
             if (Math.abs(item.aspect - aspect) > Math.max(0.45, aspect * 0.45)) continue;
             let inter = 0, union = 0;
@@ -1950,12 +1950,13 @@ function mathJaxSvgToOmml(svgEl) {
 }
 
 function isLikelyGeometricSvgSubpath(sub, pathEl) {
-    if (!sub || !pathEl) return false;
+    if (!sub) return false;
+
     const pts = sub.localPts || [];
     const cmds = String(sub.cmds || "");
-    // Only consider simple straight-line paths. Curved outlines are much more likely
-    // to be font glyphs (including CJK and chemical notation) than drawing primitives.
-    if (!/^ML+Z?$/.test(cmds) || pts.length < 2 || pts.length > 10) return false;
+    // Unknown curves and complex outlines are treated as glyphs we cannot safely
+    // reconstruct. Only low-point-count, straight-line geometry is allowed through.
+    if (!/^ML+Z?$/.test(cmds) || pts.length < 2) return false;
 
     const left = Number(sub.lLeft), right = Number(sub.lRight);
     const top = Number(sub.lTop), bottom = Number(sub.lBottom);
@@ -1963,23 +1964,30 @@ function isLikelyGeometricSvgSubpath(sub, pathEl) {
     const height = Math.max(0, bottom - top);
     if (width < 0.2 && height < 0.2) return false;
 
-    const fill = extractStyleProp(pathEl, "fill").trim().toLowerCase();
-    const stroke = extractStyleProp(pathEl, "stroke").trim().toLowerCase();
-    const noFill = fill === "none" || fill === "transparent";
+    const isClosed = /Z$/.test(cmds);
+    const stroke = pathEl
+        ? extractStyleProp(pathEl, "stroke").trim().toLowerCase()
+        : "";
     const hasStroke = Boolean(stroke) && stroke !== "none" && stroke !== "transparent";
 
-    // Clearly stroked horizontal/vertical rules and bars are valid geometry.
-    const isThinHorizontal = width >= 1.2 && height <= Math.max(0.45, width * 0.045);
-    const isThinVertical = height >= 1.2 && width <= Math.max(0.45, height * 0.045);
-    if (noFill && hasStroke && pts.length <= 6 && (isThinHorizontal || isThinVertical)) {
+    // Horizontal/vertical bars: a short open stroke or a small closed thin polygon.
+    // Point limits are intentional so text glyph contours do not get passed as lines.
+    const isThinHorizontal =
+        width >= 1.2 && height <= Math.max(0.5, width * 0.04);
+    const isThinVertical =
+        height >= 1.2 && width <= Math.max(0.5, height * 0.04);
+    if (pts.length <= 5 &&
+        (isThinHorizontal || isThinVertical) &&
+        (isClosed || hasStroke)) {
         return true;
     }
 
-    // A radical outline is a small, straight-edged hook followed by a long top bar.
-    // This deliberately narrow shape test avoids treating arbitrary polygonal glyphs
-    // as mathematical drawing primitives.
-    if (pts.length < 4) return false;
-    const tolY = Math.max(0.6, height * 0.12);
+    // Radical: allow only a short straight-edged hook with a distinct long top bar.
+    // Complex/many-point contours must fall back to the original PNG.
+    if (pts.length < 4 || pts.length > 7) return false;
+    if (!isClosed && !hasStroke) return false;
+
+    const tolY = Math.max(0.6, height * 0.1);
     const topPts = pts.filter(p => Math.abs(p.y - top) <= tolY);
     const bottomPts = pts.filter(p => Math.abs(p.y - bottom) <= tolY);
     if (topPts.length < 2 || !bottomPts.length) return false;
@@ -1988,20 +1996,20 @@ function isLikelyGeometricSvgSubpath(sub, pathEl) {
     const topRight = Math.max(...topPts.map(p => p.x));
     const bottomLeft = Math.min(...bottomPts.map(p => p.x));
     const topSpan = topRight - topLeft;
-    const xMargin = Math.max(1.0, width * 0.08);
-    const hookTolerance = Math.max(1.5, width * 0.2);
+    const hookTolerance = Math.max(1.2, width * 0.18);
     const hasLowerHook = pts.some(p =>
         p.x <= topLeft + hookTolerance &&
-        p.y >= top + height * 0.48
+        p.y >= top + height * 0.5
     );
 
-    return topSpan >= width * 0.35 &&
-           topLeft >= left + xMargin &&
+    return width >= 2.5 &&
+           height >= 2.5 &&
+           topSpan >= width * 0.35 &&
+           topLeft >= left + Math.max(0.8, width * 0.06) &&
            bottomLeft <= left + width * 0.5 &&
            bottomLeft <= topLeft + hookTolerance &&
            hasLowerHook;
 }
-
 function svgToOmml(svgText) {
     if (!svgText || typeof svgText !== "string") return null;
     const trimmed = svgText.trim();
@@ -2319,7 +2327,7 @@ function svgToOmml(svgText) {
             while (i < subs.length) {
                 let matched = null;
                 let matchedK = 1;
-                for (let k = Math.min(5, subs.length - i); k >= 1; k--) {
+                for (let k = Math.min(3, subs.length - i); k >= 1; k--) {
                     const cand = matchBatikGlyphContours(subs.slice(i, i + k));
                     if (cand) {
                         matched = cand;
