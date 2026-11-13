@@ -2336,7 +2336,7 @@ function svgToOmml(svgText) {
                     }
                 }
                 if (!matched) {
-                    for (let k = Math.min(5, subs.length - i); k >= 1; k--) {
+                    for (let k = Math.min(3, subs.length - i); k >= 1; k--) {
                         const canvasCand = matchGlyphViaCanvas(subs.slice(i, i + k));
                         if (canvasCand) {
                             matched = canvasCand;
