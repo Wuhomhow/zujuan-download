@@ -563,8 +563,8 @@ function getCanvasGlyphAtlas() {
         c.width = S; c.height = S;
         const ctx = c.getContext("2d", { willReadFrequently: true });
         if (!ctx) return (_canvasGlyphAtlas = false);
-        const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-=<>()[]{}/|.,:;!?*%、，" +
-                      "−±×÷≤≥≠≈≡∽≌≅⊥∠△▱⊙∵∴∈∉⊂⊃⊆⊇∪∩∅∞°′″√∑∏∫→←↔⇒⇔⇌↑↓·℃∥①②③④⑤⑥⑦⑧⑨⑩" +
+        const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-=<>()[]{}/|.,:;!?*%" +
+                      "−±×÷≤≥≠≈≡∽≌≅⊥∠△▱⊙∵∴∈∉⊂⊃⊆⊇∪∩∅∞°′″√∑∏∫→←↔⇒⇔⇌↑↓·℃∥" +
                       "αβγδεζηθκλμπρστφχψωΓΔΘΛΞΠΣΦΨΩ";
         const entries = [];
         for (const [fontSpec, isItal] of [
@@ -2144,6 +2144,7 @@ function svgToOmml(svgText) {
                     }
 
                     const dec = decodeMathChar(ch, fontFamily);
+                    if (/[一-龥]/.test(dec.text || "")) return null;
                     if (!dec.text || !dec.text.trim()) {
                         runningX += fsRaw * 0.35;
                         continue;
@@ -2336,13 +2337,10 @@ function svgToOmml(svgText) {
                     }
                 }
                 if (!matched) {
-                    for (let k = Math.min(3, subs.length - i); k >= 1; k--) {
-                        const canvasCand = matchGlyphViaCanvas(subs.slice(i, i + k));
-                        if (canvasCand) {
-                            matched = canvasCand;
-                            matchedK = k;
-                            break;
-                        }
+                    const canvasCand = matchGlyphViaCanvas([subs[i]]);
+                    if (canvasCand) {
+                        matched = canvasCand;
+                        matchedK = 1;
                     }
                 }
 
