@@ -564,7 +564,7 @@ function getCanvasGlyphAtlas() {
         const ctx = c.getContext("2d", { willReadFrequently: true });
         if (!ctx) return (_canvasGlyphAtlas = false);
         const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-=<>()[]{}/|.,:;!?*%、，" +
-                      "−±×÷≤≥≠≈≡∽≌≅⊥∠△▱⊙∵∴∈∉⊂⊃⊆⊇∪∩∅∞°′″√∑∏∫→←↔⇒⇔∥①②③④⑤⑥⑦⑧⑨⑩" +
+                      "−±×÷≤≥≠≈≡∽≌≅⊥∠△▱⊙∵∴∈∉⊂⊃⊆⊇∪∩∅∞°′″√∑∏∫→←↔⇒⇔⇌↑↓·℃∥①②③④⑤⑥⑦⑧⑨⑩" +
                       "αβγδεζηθκλμπρστφχψωΓΔΘΛΞΠΣΦΨΩ";
         const entries = [];
         for (const [fontSpec, isItal] of [
@@ -1949,6 +1949,59 @@ function mathJaxSvgToOmml(svgEl) {
     return body ? "<m:oMath>" + body + "</m:oMath>" : null;
 }
 
+function isLikelyGeometricSvgSubpath(sub, pathEl) {
+    if (!sub || !pathEl) return false;
+    const pts = sub.localPts || [];
+    const cmds = String(sub.cmds || "");
+    // Only consider simple straight-line paths. Curved outlines are much more likely
+    // to be font glyphs (including CJK and chemical notation) than drawing primitives.
+    if (!/^ML+Z?$/.test(cmds) || pts.length < 2 || pts.length > 10) return false;
+
+    const left = Number(sub.lLeft), right = Number(sub.lRight);
+    const top = Number(sub.lTop), bottom = Number(sub.lBottom);
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    if (width < 0.2 && height < 0.2) return false;
+
+    const fill = extractStyleProp(pathEl, "fill").trim().toLowerCase();
+    const stroke = extractStyleProp(pathEl, "stroke").trim().toLowerCase();
+    const noFill = fill === "none" || fill === "transparent";
+    const hasStroke = Boolean(stroke) && stroke !== "none" && stroke !== "transparent";
+
+    // Clearly stroked horizontal/vertical rules and bars are valid geometry.
+    const isThinHorizontal = width >= 1.2 && height <= Math.max(0.45, width * 0.045);
+    const isThinVertical = height >= 1.2 && width <= Math.max(0.45, height * 0.045);
+    if (noFill && hasStroke && pts.length <= 6 && (isThinHorizontal || isThinVertical)) {
+        return true;
+    }
+
+    // A radical outline is a small, straight-edged hook followed by a long top bar.
+    // This deliberately narrow shape test avoids treating arbitrary polygonal glyphs
+    // as mathematical drawing primitives.
+    if (pts.length < 4) return false;
+    const tolY = Math.max(0.6, height * 0.12);
+    const topPts = pts.filter(p => Math.abs(p.y - top) <= tolY);
+    const bottomPts = pts.filter(p => Math.abs(p.y - bottom) <= tolY);
+    if (topPts.length < 2 || !bottomPts.length) return false;
+
+    const topLeft = Math.min(...topPts.map(p => p.x));
+    const topRight = Math.max(...topPts.map(p => p.x));
+    const bottomLeft = Math.min(...bottomPts.map(p => p.x));
+    const topSpan = topRight - topLeft;
+    const xMargin = Math.max(1.0, width * 0.08);
+    const hookTolerance = Math.max(1.5, width * 0.2);
+    const hasLowerHook = pts.some(p =>
+        p.x <= topLeft + hookTolerance &&
+        p.y >= top + height * 0.48
+    );
+
+    return topSpan >= width * 0.35 &&
+           topLeft >= left + xMargin &&
+           bottomLeft <= left + width * 0.5 &&
+           bottomLeft <= topLeft + hookTolerance &&
+           hasLowerHook;
+}
+
 function svgToOmml(svgText) {
     if (!svgText || typeof svgText !== "string") return null;
     const trimmed = svgText.trim();
@@ -2030,6 +2083,7 @@ function svgToOmml(svgText) {
 
     const rawChars = [];
     const rawPrimitives = [];
+    let hasUnsupportedOutline = false;
 
     try {
         const defsUnicodeMap = new Map();
@@ -2265,7 +2319,7 @@ function svgToOmml(svgText) {
             while (i < subs.length) {
                 let matched = null;
                 let matchedK = 1;
-                for (let k = Math.min(3, subs.length - i); k >= 1; k--) {
+                for (let k = Math.min(5, subs.length - i); k >= 1; k--) {
                     const cand = matchBatikGlyphContours(subs.slice(i, i + k));
                     if (cand) {
                         matched = cand;
@@ -2274,10 +2328,13 @@ function svgToOmml(svgText) {
                     }
                 }
                 if (!matched) {
-                    const canvasCand = matchGlyphViaCanvas([subs[i]]);
-                    if (canvasCand) {
-                        matched = canvasCand;
-                        matchedK = 1;
+                    for (let k = Math.min(5, subs.length - i); k >= 1; k--) {
+                        const canvasCand = matchGlyphViaCanvas(subs.slice(i, i + k));
+                        if (canvasCand) {
+                            matched = canvasCand;
+                            matchedK = k;
+                            break;
+                        }
                     }
                 }
 
@@ -2315,7 +2372,9 @@ function svgToOmml(svgText) {
                     i += matchedK;
                 } else {
                     const s = subs[i];
-                    if (s.worldPts.length >= 2) {
+                    if (!isLikelyGeometricSvgSubpath(s, pathEl)) {
+                        hasUnsupportedOutline = true;
+                    } else if (s.worldPts.length >= 2) {
                         rawPrimitives.push({
                             left: s.wLeft,
                             right: s.wRight,
@@ -2335,6 +2394,7 @@ function svgToOmml(svgText) {
         }
     }
 
+    if (hasUnsupportedOutline) return null;
     if (!rawChars.length) return null;
     return buildOmmlFromSpatialItems(rawChars, rawPrimitives);
 }
