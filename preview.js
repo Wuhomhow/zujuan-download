@@ -1,16 +1,12 @@
 const _0x4c90e6=_0x1cd7;(function(_0x273005,_0x4088ff){const _0x4c8f7f=_0x1cd7,_0x5c9bed=_0x273005();while(!![]){try{const _0x38e58f=-parseInt(_0x4c8f7f(0x31e))/0x1*(parseInt(_0x4c8f7f(0x314))/0x2)+parseInt(_0x4c8f7f(0x494))/0x3+parseInt(_0x4c8f7f(0x48f))/0x4*(-parseInt(_0x4c8f7f(0x36e))/0x5)+parseInt(_0x4c8f7f(0x25b))/0x6+parseInt(_0x4c8f7f(0x258))/0x7+parseInt(_0x4c8f7f(0x42d))/0x8+-parseInt(_0x4c8f7f(0x34a))/0x9;if(_0x38e58f===_0x4088ff)break;else _0x5c9bed['push'](_0x5c9bed['shift']());}catch(_0x5eb61){_0x5c9bed['push'](_0x5c9bed['shift']());}}}(_0x4d09,0xbcd0b));import{buildPreviewHtml,buildPreviewMeta}from'./layout.js';function getPreviewId(){const _0x26b528=_0x1cd7;return new URL(location[_0x26b528(0x1ac)])[_0x26b528(0x251)][_0x26b528(0x3a3)]('id');}function prepareListeningQr(_0x21e9ef){const _0x1ab866=_0x1cd7,_0x541cc9={};_0x541cc9[_0x1ab866(0x31d)]=function(_0x56fc09,_0x213bf1){return _0x56fc09===_0x213bf1;},_0x541cc9[_0x1ab866(0x281)]=function(_0x16296e,_0xba6e){return _0x16296e!==_0xba6e;},_0x541cc9['wITQH']=_0x1ab866(0x491),_0x541cc9['AyKlL']=_0x1ab866(0x394),_0x541cc9['ORqee']=_0x1ab866(0x38f);const _0x5bf1a4=_0x541cc9,_0x60133a=_0x21e9ef?.['listeningAudio'];if(!(_0x60133a?.[_0x1ab866(0x463)]||_0x60133a?.[_0x1ab866(0x23a)])||_0x1ab866(0x3b9)!=typeof globalThis[_0x1ab866(0x48e)])return;try{const _0x37326f=new URL(_0x60133a['playerBaseUrl']||_0x60133a['playerUrl']),_0x25c2f5=_0x5bf1a4[_0x1ab866(0x31d)](!0x0,_0x60133a[_0x1ab866(0x26f)]?.['whole'])||!_0x60133a[_0x1ab866(0x26f)]&&/[?&](?:q|qbm)=\d+/['test'](_0x37326f[_0x1ab866(0x1b8)]),_0x16657d=_0x5bf1a4['hyzBi'](!0x0,_0x60133a[_0x1ab866(0x26f)]?.[_0x1ab866(0x2d9)])&&(Array[_0x1ab866(0x40a)](_0x60133a['singleQuestions'])&&_0x60133a[_0x1ab866(0x287)][_0x1ab866(0x4e7)]>0x0||!0x0===_0x60133a['availableModes']?.[_0x1ab866(0x2d9)]),_0x47f769=[];_0x25c2f5&&_0x47f769['push'](_0x1ab866(0x20b)),_0x16657d&&_0x47f769[_0x1ab866(0x487)](_0x1ab866(0x2d9));if(_0x5bf1a4[_0x1ab866(0x281)](_0x5bf1a4[_0x1ab866(0x27f)],_0x37326f[_0x1ab866(0x1ca)])||![_0x1ab866(0x378),_0x5bf1a4[_0x1ab866(0x2e7)]][_0x1ab866(0x267)](_0x37326f[_0x1ab866(0x1c2)])||!_0x47f769[_0x1ab866(0x4e7)])return;_0x37326f[_0x1ab866(0x251)][_0x1ab866(0x2d1)](_0x1ab866(0x2b9))&&_0x37326f[_0x1ab866(0x251)]['set']('m',_0x47f769[_0x1ab866(0x4e0)](',')),_0x60133a[_0x1ab866(0x23a)]=_0x37326f['href'];const _0x16bb9c=globalThis['qrcode'](0x0,'M');_0x16bb9c[_0x1ab866(0x42f)](_0x37326f['href'],_0x5bf1a4['ORqee']),_0x16bb9c['make'](),_0x60133a[_0x1ab866(0x2ff)]=_0x16bb9c[_0x1ab866(0x4e9)](0x4,0x8);}catch{}}function cleanName(_0x509a18){const _0x1ab943=_0x1cd7;return(_0x509a18||'导出内容')[_0x1ab943(0x2a2)](/[\\/:*?"<>|]/g,'_');}function stripInvalidXmlChars(_0x2228a7){const _0x140cf7=_0x1cd7,_0xa09486={'SpdgV':function(_0x3bd9c8,_0x573037){return _0x3bd9c8(_0x573037);}};return _0xa09486[_0x140cf7(0x1dd)](String,_0x2228a7||'')['replace'](/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g,'');}function escapeHtml(_0x5b7d28){const _0x53b026=_0x1cd7,_0x3018a5={};return _0x3018a5['&']='&amp;',_0x3018a5['<']='&lt;',_0x3018a5['>']=_0x53b026(0x39b),_0x3018a5['\x22']='&quot;',stripInvalidXmlChars(_0x5b7d28)[_0x53b026(0x2a2)](/[&<>\"]/g,_0x3dda1c=>_0x3018a5[_0x3dda1c]);}function decodeBase64Utf8(_0x1716eb){const _0x1b4bdc=_0x1cd7;try{return decodeURIComponent(Array['prototype'][_0x1b4bdc(0x4e8)][_0x1b4bdc(0x222)](atob(_0x1716eb),_0x109c1d=>'%'+('00'+_0x109c1d['charCodeAt'](0x0)['toString'](0x10))[_0x1b4bdc(0x3f3)](-0x2))[_0x1b4bdc(0x4e0)](''));}catch{try{return atob(_0x1716eb);}catch{return'';}}}function replaceFormulaImages(_0x17856e,_0x30ca2f=_0x4c90e6(0x309)){const _0x12cc91=_0x4c90e6,_0x18ed37={};_0x18ed37['dzJhx']='span',_0x18ed37[_0x12cc91(0x1b9)]=_0x12cc91(0x2d8),_0x18ed37[_0x12cc91(0x457)]='src',_0x18ed37['StPdE']=_0x12cc91(0x2e3),_0x18ed37['qIsQd']=_0x12cc91(0x43e),_0x18ed37[_0x12cc91(0x43b)]=_0x12cc91(0x2c1),_0x18ed37[_0x12cc91(0x423)]='div';const _0x284d1a=_0x18ed37,_0x12ed0e=document['createElement'](_0x284d1a['CzCDZ']);if(_0x12ed0e[_0x12cc91(0x498)]=_0x17856e||'',_0x12cc91(0x263)===_0x30ca2f)_0x12ed0e[_0x12cc91(0x492)]('img[latex],\x20img[mathml]')['forEach'](_0x3d7bfb=>{const _0x472b50=_0x12cc91,_0x390275=_0x3d7bfb[_0x472b50(0x4d1)](_0x472b50(0x2e3));if(_0x390275){const _0x481107=document[_0x472b50(0x3f7)](_0x284d1a[_0x472b50(0x40e)]);_0x481107[_0x472b50(0x301)]=_0x472b50(0x278),_0x481107[_0x472b50(0x3f2)](_0x472b50(0x4d2),_0x390275),_0x481107[_0x472b50(0x3de)]=_0x390275,_0x3d7bfb['replaceWith'](_0x481107);}else{const _0x3aae22=decodeBase64Utf8((_0x3d7bfb['getAttribute'](_0x284d1a[_0x472b50(0x1b9)])||'')[_0x472b50(0x479)]());if(_0x3aae22){const _0xc58a19=document[_0x472b50(0x3f7)]('span');_0xc58a19[_0x472b50(0x301)]=_0x472b50(0x4d3),_0xc58a19[_0x472b50(0x498)]=_0x3aae22,_0x3d7bfb[_0x472b50(0x319)](_0xc58a19);}else{const _0x500769=_0x3d7bfb['getAttribute'](_0x472b50(0x380))||'',_0x5e6b6c=_0x500769[_0x472b50(0x2a2)](/(\/quesimg\/Upload\/formula\/[a-f0-9]+)\.png(\?.*)?$/i,_0x472b50(0x4a2));_0x5e6b6c!==_0x500769&&_0x3d7bfb[_0x472b50(0x3f2)](_0x284d1a[_0x472b50(0x457)],_0x5e6b6c),_0x3d7bfb[_0x472b50(0x461)](_0x284d1a[_0x472b50(0x2fd)]),_0x3d7bfb[_0x472b50(0x461)](_0x472b50(0x2d8));}}});else _0x12ed0e[_0x12cc91(0x492)](_0x12cc91(0x435))[_0x12cc91(0x4ae)](_0x9a5544=>{const _0x2d57af=_0x12cc91,_0x656b7=_0x9a5544[_0x2d57af(0x4d1)]('src')||'',_0x52b8cb=_0x656b7['replace'](/(\/quesimg\/Upload\/formula\/[a-f0-9]+)\.png(\?.*)?$/i,'$1.svg$2');_0x52b8cb!==_0x656b7&&_0x9a5544[_0x2d57af(0x3f2)](_0x2d57af(0x380),_0x52b8cb),_0x9a5544[_0x2d57af(0x461)](_0x284d1a[_0x2d57af(0x2fd)]),_0x9a5544['removeAttribute'](_0x284d1a['Zjxqu']),_0x9a5544[_0x2d57af(0x4d1)](_0x284d1a['qIsQd'])||_0x9a5544[_0x2d57af(0x3f2)]('style',_0x284d1a['yaeFn']);});return _0x12ed0e['innerHTML'];}function mathMlToOmmlEl(rootEl) {
     const escXml = str => stripInvalidXmlChars(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const makeRun = (text, style) => {
+    const makeRun = (text, style, vertAlign = '') => {
         if (!text || !String(text).length) return '';
         const sty = style === 'nor' ? 'p' : style;
-        return '<m:r>' + (sty ? '<m:rPr><m:sty m:val="' + sty + '"/></m:rPr>' : '') + OMML_W_RPR + '<m:t xml:space="preserve">' + escXml(text) + '</m:t></m:r>';
-    };
-
-    const ACCENTS = {
-        '→': '⃗', '⟶': '⃗', '←': '⃖', '⟵': '⃖',
-        '↔': '⃡', '⟷': '⃡', '‾': '̅', '¯': '̅',
-        '^': '̂', '⌢': '̑', '·': '̇', '⃗': '⃗',
-        '⃖': '⃖', '⃡': '⃡'
+        const wRPr = vertAlign
+            ? '<w:rPr><w:rFonts w:ascii="Cambria Math" w:eastAsia="宋体" w:hAnsi="Cambria Math" w:cs="Cambria Math"/><w:vertAlign w:val="' + vertAlign + '"/></w:rPr>'
+            : OMML_W_RPR;
+        return '<m:r>' + (sty ? '<m:rPr><m:sty m:val="' + sty + '"/></m:rPr>' : '') + wRPr + '<m:t xml:space="preserve">' + escXml(text) + '</m:t></m:r>';
     };
 
     const walk = node => {
@@ -40,46 +36,36 @@ const _0x4c90e6=_0x1cd7;(function(_0x273005,_0x4088ff){const _0x4c8f7f=_0x1cd7,_
                 return '';
 
             case 'mover': {
-                if (children.length < 2) return childrenOmml;
-                const baseNode = children[0];
-                const overNode = children[children.length - 1];
-                const overText = (overNode.textContent || '').trim();
-                const accent = ACCENTS[overText];
-                if (accent) {
-                    return '<m:acc><m:accPr><m:chr m:val="' + escXml(accent) + '"/></m:accPr><m:e>' + walk(baseNode) + '</m:e></m:acc>';
+                if (children.length >= 2) {
+                    const baseNode = children[0];
+                    const overNode = children[1];
+                    const accent = (overNode.textContent || '').trim();
+                    if (['¯', '‾', '-', '—', '→', '←', '↔', '^', 'ˆ', '~', '˜', '˙', '¨', '⃗'].includes(accent)) {
+                        return '<m:acc><m:accPr><m:chr m:val="' + escXml(accent) + '"/></m:accPr><m:e>' + walk(baseNode) + '</m:e></m:acc>';
+                    }
+                    return '<m:limUpp><m:e>' + walk(baseNode) + '</m:e><m:lim>' + walk(overNode) + '</m:lim></m:limUpp>';
                 }
-                return '<m:limUpper><m:e>' + walk(baseNode) + '</m:e><m:lim>' + walk(overNode) + '</m:lim></m:limUpper>';
+                return childrenOmml;
             }
 
             case 'munder': {
-                if (children.length < 2) return childrenOmml;
-                const baseNode = children[0];
-                const underNode = children[1];
-                const underText = (underNode.textContent || '').trim();
-                const baseTag = (baseNode.localName || baseNode.tagName || '').toLowerCase();
-                // 识别组卷网用双层或单层 <munder> + "_" 伪造的化学反应条件等号
-                if (/^[_‾—―=＝]+$/.test(underText)) {
-                    if (baseTag === 'munder' && baseNode.children.length >= 2) {
-                        const innerUnderText = (baseNode.children[1].textContent || '').trim();
-                        if (/^[_‾—―=＝]+$/.test(innerUnderText)) {
-                            const condNode = baseNode.children[0];
-                            return '<m:limUpper><m:e>' + makeRun('===', 'p') + '</m:e><m:lim>' + walk(condNode) + '</m:lim></m:limUpper>';
-                        }
+                if (children.length >= 2) {
+                    const baseNode = children[0];
+                    const underNode = children[1];
+                    const underText = (underNode.textContent || '').trim();
+                    // 将反应条件下方的伪造横线转换为 OMML 原生底部横线
+                    if (/^[_＿\\\-—=＝]+$/.test(underText)) {
+                        return '<m:bar><m:barPr><m:pos m:val="bot"/></m:barPr><m:e>' + walk(baseNode) + '</m:e></m:bar>';
                     }
-                    return '<m:limUpper><m:e>' + makeRun('===', 'p') + '</m:e><m:lim>' + walk(baseNode) + '</m:lim></m:limUpper>';
+                    return '<m:limLow><m:e>' + walk(baseNode) + '</m:e><m:lim>' + walk(underNode) + '</m:lim></m:limLow>';
                 }
-                return '<m:limLow><m:e>' + walk(baseNode) + '</m:e><m:lim>' + walk(underNode) + '</m:lim></m:limLow>';
+                return childrenOmml;
             }
 
             case 'munderover': {
                 if (children.length >= 3) {
-                    const baseNode = children[0];
-                    const underNode = children[1];
-                    const overNode = children[2];
-                    return '<m:limLow><m:e><m:limUpper><m:e>' + walk(baseNode) + '</m:e><m:lim>' + walk(overNode) + '</m:lim></m:limUpper></m:e><m:lim>' + walk(underNode) + '</m:lim></m:limLow>';
-                }
-                if (children.length === 2) {
-                    return '<m:limLow><m:e>' + walk(children[0]) + '</m:e><m:lim>' + walk(children[1]) + '</m:lim></m:limLow>';
+                    const low = '<m:limLow><m:e>' + walk(children[0]) + '</m:e><m:lim>' + walk(children[1]) + '</m:lim></m:limLow>';
+                    return '<m:limUpp><m:e>' + low + '</m:e><m:lim>' + walk(children[2]) + '</m:lim></m:limUpp>';
                 }
                 return childrenOmml;
             }
@@ -109,25 +95,45 @@ const _0x4c90e6=_0x1cd7;(function(_0x273005,_0x4088ff){const _0x4c8f7f=_0x1cd7,_
 
             case 'msup': {
                 const base = children[0] ? walk(children[0]) : '';
-                const sup = children[1] ? walk(children[1]) : '';
+                const supText = children[1] ? (children[1].textContent || '').trim() : '';
+                if (!supText) return base;
+                if (children[1].children.length === 0) {
+                    return base + makeRun(supText, 'p', 'superscript');
+                }
+                const sup = walk(children[1]);
                 if (!sup) return base;
                 return '<m:sSup><m:e>' + base + '</m:e><m:sup>' + sup + '</m:sup></m:sSup>';
             }
 
             case 'msub': {
                 const base = children[0] ? walk(children[0]) : '';
-                const sub = children[1] ? walk(children[1]) : '';
+                const subText = children[1] ? (children[1].textContent || '').trim() : '';
+                if (!subText) return base;
+                if (children[1].children.length === 0) {
+                    return base + makeRun(subText, 'p', 'subscript');
+                }
+                const sub = walk(children[1]);
                 if (!sub) return base;
                 return '<m:sSub><m:e>' + base + '</m:e><m:sub>' + sub + '</m:sub></m:sSub>';
             }
 
             case 'msubsup': {
                 const base = children[0] ? walk(children[0]) : '';
-                const sub = children[1] ? walk(children[1]) : '';
-                const sup = children[2] ? walk(children[2]) : '';
+                const subText = children[1] ? (children[1].textContent || '').trim() : '';
+                const supText = children[2] ? (children[2].textContent || '').trim() : '';
+                const sub = subText && children[1] ? walk(children[1]) : '';
+                const sup = supText && children[2] ? walk(children[2]) : '';
                 if (!sub && !sup) return base;
-                if (!sub) return '<m:sSup><m:e>' + base + '</m:e><m:sup>' + sup + '</m:sup></m:sSup>';
-                if (!sup) return '<m:sSub><m:e>' + base + '</m:e><m:sub>' + sub + '</m:sub></m:sSub>';
+                if (!sub) {
+                    return children[2].children.length === 0
+                        ? base + makeRun(supText, 'p', 'superscript')
+                        : '<m:sSup><m:e>' + base + '</m:e><m:sup>' + sup + '</m:sup></m:sSup>';
+                }
+                if (!sup) {
+                    return children[1].children.length === 0
+                        ? base + makeRun(subText, 'p', 'subscript')
+                        : '<m:sSub><m:e>' + base + '</m:e><m:sub>' + sub + '</m:sub></m:sSub>';
+                }
                 return '<m:sSubSup><m:e>' + base + '</m:e><m:sub>' + sub + '</m:sub><m:sup>' + sup + '</m:sup></m:sSubSup>';
             }
 
