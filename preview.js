@@ -2,7 +2,8 @@ const _0x4c90e6=_0x1cd7;(function(_0x273005,_0x4088ff){const _0x4c8f7f=_0x1cd7,_
     const escXml = str => stripInvalidXmlChars(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const makeRun = (text, style) => {
         if (!text || !String(text).length) return '';
-        return '<m:r>' + (style ? '<m:rPr><m:sty m:val="' + style + '"/></m:rPr>' : '') + OMML_W_RPR + '<m:t xml:space="preserve">' + escXml(text) + '</m:t></m:r>';
+        const sty = style === 'nor' ? 'p' : style;
+        return '<m:r>' + (sty ? '<m:rPr><m:sty m:val="' + sty + '"/></m:rPr>' : '') + OMML_W_RPR + '<m:t xml:space="preserve">' + escXml(text) + '</m:t></m:r>';
     };
 
     const ACCENTS = {
@@ -54,6 +55,19 @@ const _0x4c90e6=_0x1cd7;(function(_0x273005,_0x4088ff){const _0x4c8f7f=_0x1cd7,_
                 if (children.length < 2) return childrenOmml;
                 const baseNode = children[0];
                 const underNode = children[1];
+                const underText = (underNode.textContent || '').trim();
+                const baseTag = (baseNode.localName || baseNode.tagName || '').toLowerCase();
+                // 识别组卷网用双层或单层 <munder> + "_" 伪造的化学反应条件等号
+                if (/^[_‾—―=＝]+$/.test(underText)) {
+                    if (baseTag === 'munder' && baseNode.children.length >= 2) {
+                        const innerUnderText = (baseNode.children[1].textContent || '').trim();
+                        if (/^[_‾—―=＝]+$/.test(innerUnderText)) {
+                            const condNode = baseNode.children[0];
+                            return '<m:limUpper><m:e>' + makeRun('===', 'p') + '</m:e><m:lim>' + walk(condNode) + '</m:lim></m:limUpper>';
+                        }
+                    }
+                    return '<m:limUpper><m:e>' + makeRun('===', 'p') + '</m:e><m:lim>' + walk(baseNode) + '</m:lim></m:limUpper>';
+                }
                 return '<m:limLow><m:e>' + walk(baseNode) + '</m:e><m:lim>' + walk(underNode) + '</m:lim></m:limLow>';
             }
 
@@ -96,12 +110,14 @@ const _0x4c90e6=_0x1cd7;(function(_0x273005,_0x4088ff){const _0x4c8f7f=_0x1cd7,_
             case 'msup': {
                 const base = children[0] ? walk(children[0]) : '';
                 const sup = children[1] ? walk(children[1]) : '';
+                if (!sup) return base;
                 return '<m:sSup><m:e>' + base + '</m:e><m:sup>' + sup + '</m:sup></m:sSup>';
             }
 
             case 'msub': {
                 const base = children[0] ? walk(children[0]) : '';
                 const sub = children[1] ? walk(children[1]) : '';
+                if (!sub) return base;
                 return '<m:sSub><m:e>' + base + '</m:e><m:sub>' + sub + '</m:sub></m:sSub>';
             }
 
@@ -109,6 +125,9 @@ const _0x4c90e6=_0x1cd7;(function(_0x273005,_0x4088ff){const _0x4c8f7f=_0x1cd7,_
                 const base = children[0] ? walk(children[0]) : '';
                 const sub = children[1] ? walk(children[1]) : '';
                 const sup = children[2] ? walk(children[2]) : '';
+                if (!sub && !sup) return base;
+                if (!sub) return '<m:sSup><m:e>' + base + '</m:e><m:sup>' + sup + '</m:sup></m:sSup>';
+                if (!sup) return '<m:sSub><m:e>' + base + '</m:e><m:sub>' + sub + '</m:sub></m:sSub>';
                 return '<m:sSubSup><m:e>' + base + '</m:e><m:sub>' + sub + '</m:sub><m:sup>' + sup + '</m:sup></m:sSubSup>';
             }
 
@@ -129,7 +148,12 @@ const _0x4c90e6=_0x1cd7;(function(_0x273005,_0x4088ff){const _0x4c8f7f=_0x1cd7,_
             }
 
             case 'mtable': {
-                return '<m:m>' + children.map(row =>
+                const nonEmptyRows = children.filter(row => (row.textContent || '').trim().length > 0);
+                if (nonEmptyRows.length === 0) return '';
+                if (nonEmptyRows.length === 1 && nonEmptyRows[0].children.length === 1) {
+                    return walk(nonEmptyRows[0].children[0]);
+                }
+                return '<m:m>' + nonEmptyRows.map(row =>
                     '<m:mr>' + [...row.children].map(cell =>
                         '<m:e>' + walk(cell) + '</m:e>'
                     ).join('') + '</m:mr>'
